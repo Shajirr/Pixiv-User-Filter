@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light dark">
+    <link rel="stylesheet" href="chrome://global/skin/in-content/common.css">
+    <title>Pixiv User Filter Options</title>
+    <style>
+        body {
+            padding: 20px;
+            background-color: var(--in-content-page-background, #fff);
+            color: var(--in-content-page-color, #000);
+            font-family: system-ui, -apple-system, sans-serif;
+            font-size: 14px;
+        }
+        form {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            max-width: 600px;
+        }
+        label {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 14px;
+        }
+        textarea {
+            width: 150px;
+            min-height: 20px;
+            padding: 8px;
+            border: 1px solid var(--in-content-box-border-color, #ccc);
+            border-radius: 4px;
+            background-color: var(--in-content-box-background, #fff);
+            color: var(--in-content-text-color, #000);
+            font-size: 14px;
+            resize: vertical;
+            overflow-y: auto;
+        }
+        textarea.invalid {
+            border-color: var(--in-content-error-color, #c93434);
+        }
+        input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--in-content-primary-button-background, #0060df);
+        }
+        button {
+            width: auto;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 5px 10px;
+            background-color: #e0e0e0; /* Light gray for light mode */
+            color: #000; /* Black text in light mode */
+            border: 1px solid var(--in-content-button-border-color, #ccc);
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover, button:active {
+            background-color: #d0d0d0; /* Lighter gray for hover/active in light mode */
+        }
+        .save-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        #save-message {
+            font-size: 14px;
+            visibility: hidden;
+            opacity: 0;
+            transition: opacity 0.5s ease-in-out, visibility 0.5s ease-in-out;
+            color: var(--in-content-text-color, #000);
+        }
+        #save-message.visible {
+            visibility: visible;
+            opacity: 1;
+        }
+        #error-message {
+            font-size: 14px;
+            display: none;
+            opacity: 0;
+            transition: opacity 0.5s ease-in-out;
+            color: var(--in-content-error-color, #c93434);
+        }
+        #error-message.visible {
+            display: block;
+            opacity: 1;
+        }
+        /* Dark mode adjustments */
+        @media (prefers-color-scheme: dark) {
+            textarea {
+                background-color: var(--in-content-box-background, #3a3a3e);
+                color: var(--in-content-text-color, #d0d0d0);
+                border-color: var(--in-content-box-border-color, #4a4a4e);
+            }
+            textarea.invalid {
+                border-color: var(--in-content-error-color, #e04f5f);
+            }
+            button {
+                background-color: #4a4a4e; /* Medium gray for dark mode */
+                color: #fff; /* White text in dark mode */
+                border: 1px solid var(--in-content-button-border-color, #ccc);
+            }
+            button:hover, button:active {
+                background-color: #5a5a5e; /* Lighter gray for hover/active in dark mode */
+            }
+            #save-message {
+                color: var(--in-content-text-color, #d0d0d0);
+            }
+            #error-message {
+                color: var(--in-content-error-color, #e04f5f);
+            }
+        }
+    </style>
+</head>
+<body>
+    <form id="options-form">
+        <label for="blacklist">Blacklisted User IDs (one per line):</label>
+        <textarea id="blacklist"></textarea>
+        <span id="error-message">Invalid input detected</span>
+        <label>
+            <input type="checkbox" id="removeSameAuthor">
+            Remove recommendations from the same author
+        </label>
+        <div class="save-container">
+            <button id="save" type="button">Save</button>
+            <span id="save-message">Settings saved</span>
+        </div>
+    </form>
+    <script src="options.js"></script>
+</body>
+</html>
