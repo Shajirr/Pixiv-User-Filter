@@ -89,6 +89,11 @@
             display: block;
             opacity: 1;
         }
+        .description {
+            font-size: 0.9em;
+            color: var(--in-content-text-color, #555);
+            margin-top: 5px;
+        }
         /* Dark mode adjustments */
         @media (prefers-color-scheme: dark) {
             textarea {
@@ -113,20 +118,23 @@
             #error-message {
                 color: var(--in-content-error-color, #e04f5f);
             }
+            .description {
+                color: var(--in-content-text-color, #aaa);
+            }
         }
     </style>
 </head>
 <body>
     <form id="options-form">
         <label for="blacklist">Blacklisted User IDs (one per line):</label>
-        <textarea id="blacklist"></textarea>
-        <span id="error-message">Invalid input detected</span>
+        <textarea id="blacklist" aria-describedby="error-message"></textarea>
+        <span id="error-message" role="alert">Invalid input detected</span>
         <label>
             <input type="checkbox" id="removeSameAuthor">
             Remove recommendations from the same author
         </label>
         <div class="save-container">
-            <button id="save" type="button">Save</button>
+            <button id="save" type="submit">Save</button>
             <span id="save-message">Settings saved</span>
         </div>
     </form>

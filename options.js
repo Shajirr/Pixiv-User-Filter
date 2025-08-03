@@ -1,26 +1,32 @@
+function debounce(fn, delay) {
+  let timeoutId;
+  return (...args) => {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => fn(...args), delay);
+  };
+}
+
 function setTextareaHeight() {
   const textarea = document.getElementById('blacklist');
   const lines = textarea.value.split('\n').length;
   const maxLines = 30;
   const lineHeight = 20; // Approximate line height in pixels
   textarea.style.height = `${Math.min(lines, maxLines) * lineHeight + 30}px`;
-  if (lines > maxLines) {
-    textarea.style.overflowY = 'auto';
-  } else {
-    textarea.style.overflowY = 'hidden';
-  }
+  textarea.style.overflowY = lines > maxLines ? 'auto' : 'hidden';
 }
 
-function validateBlacklist(input) {
+function parseBlacklist(input) {
   const lines = input.split('\n').filter(line => line.trim());
-  if (lines.length === 0) return { isValid: true };
+  const ids = [];
+  if (lines.length === 0) return { isValid: true, ids };
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     if (line && !/^\d+$/.test(line)) {
       return { isValid: false, lineNumber: i + 1, lineContent: line };
     }
+    if (line) ids.push(line);
   }
-  return { isValid: true };
+  return { isValid: true, ids };
 }
 
 function showErrorMessage(validationResult) {
@@ -45,35 +51,34 @@ function showSaveMessage(messageText, isSuccess) {
   }, 3000);
 }
 
-document.getElementById('blacklist').addEventListener('input', () => {
-  setTextareaHeight();
-  const input = document.getElementById('blacklist').value;
-  const validationResult = validateBlacklist(input);
-  showErrorMessage(validationResult);
-});
+const textarea = document.getElementById('blacklist');
+const form = document.getElementById('options-form');
 
-document.getElementById('save').addEventListener('click', () => {
-  const textarea = document.getElementById('blacklist');
-  const input = textarea.value;
-  const validationResult = validateBlacklist(input);
-  if (validationResult.isValid) {
-    const blacklist = input.split('\n').filter(id => id.trim() && /^\d+$/.test(id.trim()));
+textarea.addEventListener('input', debounce(() => {
+  setTextareaHeight();
+  const validationResult = parseBlacklist(textarea.value);
+  showErrorMessage(validationResult);
+}, 300));
+
+form.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const result = parseBlacklist(textarea.value);
+  showErrorMessage(result);
+  if (result.isValid) {
     const removeSameAuthor = document.getElementById('removeSameAuthor').checked;
-    browser.storage.local.set({ blacklist, removeSameAuthor }).then(() => {
+    browser.storage.local.set({ blacklist: result.ids, removeSameAuthor }).then(() => {
       showSaveMessage('Settings saved', true);
       browser.runtime.sendMessage({ action: "refreshBlacklist" });
-      showErrorMessage({ isValid: true });
     });
   } else {
     showSaveMessage('Settings not saved, error in the Blacklisted User ID list', false);
-    showErrorMessage(validationResult);
   }
 });
 
 browser.storage.local.get(['blacklist', 'removeSameAuthor']).then(result => {
-  document.getElementById('blacklist').value = (result.blacklist || []).join('\n');
+  textarea.value = (result.blacklist || []).join('\n');
   document.getElementById('removeSameAuthor').checked = result.removeSameAuthor || false;
   setTextareaHeight();
-  const validationResult = validateBlacklist(document.getElementById('blacklist').value);
+  const validationResult = parseBlacklist(textarea.value);
   showErrorMessage(validationResult);
 });

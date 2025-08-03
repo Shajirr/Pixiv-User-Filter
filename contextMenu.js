@@ -1,14 +1,60 @@
-browser.contextMenus.removeAll(() => {
-  // console.log('Cleared existing context menus');
+const DEBUG = false; // Toggle for debug logging
+
+function logDebug(...args) {
+  if (DEBUG) console.log(...args);
+}
+
+function showNotification(title, message) {
+  browser.notifications.create({
+    type: "basic",
+    title,
+    message,
+    iconUrl: "icon.svg"
+  });
+}
+
+async function updateBlacklist(userId, action, tabId) {
+  try {
+    const { blacklist = [] } = await browser.storage.local.get('blacklist');
+    const blacklistSet = new Set(blacklist);
+    if (action === "add") {
+      if (blacklistSet.has(userId)) {
+        logDebug(`User ID ${userId} already in blacklist`);
+        showNotification("Pixiv User Filter", `User ID ${userId} is already in the blacklist`);
+        return;
+      }
+      blacklistSet.add(userId);
+      logDebug(`Added user ID ${userId} to blacklist`);
+      showNotification("Pixiv User Filter", `User ID ${userId} added to blacklist`);
+    } else if (action === "remove") {
+      if (!blacklistSet.has(userId)) {
+        logDebug(`User ID ${userId} not in blacklist`);
+        showNotification("Pixiv User Filter", `User ID ${userId} is not in the blacklist`);
+        return;
+      }
+      blacklistSet.delete(userId);
+      logDebug(`Removed user ID ${userId} from blacklist`);
+      showNotification("Pixiv User Filter", `User ID ${userId} removed from blacklist`);
+    }
+    await browser.storage.local.set({ blacklist: Array.from(blacklistSet) });
+    await browser.tabs.sendMessage(tabId, { action: "refreshBlacklist" });
+  } catch (error) {
+    console.error(`Error ${action}ing user ID ${userId}:`, error);
+    showNotification("Pixiv User Filter", `Failed to ${action} user ID ${userId}: ${error.message}`);
+  }
+}
+
+browser.contextMenus.removeAll().then(() => {
+  logDebug('Cleared existing context menus');
   browser.contextMenus.create({
     id: "pixiv-blacklist",
     title: "Pixiv User Filter",
     contexts: ["link"]
   }, () => {
     if (browser.runtime.lastError) {
-      // console.error("Error creating parent menu:", browser.runtime.lastError);
+      console.error("Error creating parent menu:", browser.runtime.lastError);
     } else {
-      // console.log("Parent menu created successfully");
+      logDebug("Parent menu created successfully");
     }
   });
 
@@ -19,9 +65,9 @@ browser.contextMenus.removeAll(() => {
     contexts: ["link"]
   }, () => {
     if (browser.runtime.lastError) {
-      // console.error("Error creating add-to-blacklist submenu:", browser.runtime.lastError);
+      console.error("Error creating add-to-blacklist submenu:", browser.runtime.lastError);
     } else {
-      // console.log("Add-to-blacklist submenu created successfully");
+      logDebug("Add-to-blacklist submenu created successfully");
     }
   });
 
@@ -32,109 +78,38 @@ browser.contextMenus.removeAll(() => {
     contexts: ["link"]
   }, () => {
     if (browser.runtime.lastError) {
-      // console.error("Error creating remove-from-blacklist submenu:", browser.runtime.lastError);
+      console.error("Error creating remove-from-blacklist submenu:", browser.runtime.lastError);
     } else {
-      // console.log("Remove-from-blacklist submenu created successfully");
+      logDebug("Remove-from-blacklist submenu created successfully");
     }
   });
+}).catch(error => {
+  console.error("Error initializing context menus:", error);
 });
 
 browser.contextMenus.onClicked.addListener((info, tab) => {
   const linkUrl = info.linkUrl;
   const match = linkUrl.match(/\/en\/users\/(\d+)/);
   if (!match) {
-    // console.log("Invalid user URL:", linkUrl);
-    browser.notifications.create({
-      type: "basic",
-      title: "Pixiv User Filter",
-      message: "Invalid user URL. Please select a valid user profile link.",
-      iconUrl: "icon.svg"
-    });
+    logDebug("Invalid user URL:", linkUrl);
+    showNotification("Pixiv User Filter", "Invalid user URL. Please select a valid user profile link.");
     return;
   }
   const userId = match[1];
-
   if (info.menuItemId === "add-to-blacklist") {
-    browser.storage.local.get('blacklist').then(result => {
-      const blacklist = new Set(result.blacklist || []);
-      if (!blacklist.has(userId)) {
-        blacklist.add(userId);
-        browser.storage.local.set({ blacklist: Array.from(blacklist) }).then(() => {
-          // console.log(`Added user ID ${userId} to blacklist`);
-          browser.notifications.create({
-            type: "basic",
-            title: "Pixiv User Filter",
-            message: `User ID ${userId} added to blacklist`,
-            iconUrl: "icon.svg"
-          });
-          browser.tabs.sendMessage(tab.id, { action: "refreshBlacklist" });
-        }).catch(error => {
-          // console.error("Error saving blacklist:", error);
-          browser.notifications.create({
-            type: "basic",
-            title: "Pixiv User Filter",
-            message: `Failed to add user ID ${userId} to blacklist: ${error.message}`,
-            iconUrl: "icon.svg"
-          });
-        });
-      } else {
-        // console.log(`User ID ${userId} already in blacklist`);
-        browser.notifications.create({
-          type: "basic",
-          title: "Pixiv User Filter",
-          message: `User ID ${userId} is already in the blacklist`,
-          iconUrl: "icon.svg"
-        });
-      }
-    }).catch(error => {
-      // console.error("Error retrieving blacklist:", error);
-      browser.notifications.create({
-        type: "basic",
-        title: "Pixiv User Filter",
-        message: `Failed to retrieve blacklist: ${error.message}`,
-        iconUrl: "icon.svg"
-      });
-    });
+    updateBlacklist(userId, "add", tab.id);
   } else if (info.menuItemId === "remove-from-blacklist") {
-    browser.storage.local.get('blacklist').then(result => {
-      const blacklist = new Set(result.blacklist || []);
-      if (blacklist.has(userId)) {
-        blacklist.delete(userId);
-        browser.storage.local.set({ blacklist: Array.from(blacklist) }).then(() => {
-          // console.log(`Removed user ID ${userId} from blacklist`);
-          browser.notifications.create({
-            type: "basic",
-            title: "Pixiv User Filter",
-            message: `User ID ${userId} removed from blacklist`,
-            iconUrl: "icon.svg"
-          });
-          browser.tabs.sendMessage(tab.id, { action: "refreshBlacklist" });
-        }).catch(error => {
-          // console.error("Error saving blacklist:", error);
-          browser.notifications.create({
-            type: "basic",
-            title: "Pixiv User Filter",
-            message: `Failed to remove user ID ${userId} from blacklist: ${error.message}`,
-            iconUrl: "icon.svg"
-          });
-        });
-      } else {
-        // console.log(`User ID ${userId} not in blacklist`);
-        browser.notifications.create({
-          type: "basic",
-          title: "Pixiv User Filter",
-          message: `User ID ${userId} is not in the blacklist`,
-          iconUrl: "icon.svg"
-        });
-      }
-    }).catch(error => {
-      // console.error("Error retrieving blacklist:", error);
-      browser.notifications.create({
-        type: "basic",
-        title: "Pixiv User Filter",
-        message: `Failed to retrieve blacklist: ${error.message}`,
-        iconUrl: "icon.svg"
-      });
-    });
+    updateBlacklist(userId, "remove", tab.id);
+  }
+});
+
+browser.runtime.onMessage.addListener((message) => {
+  if (message.action === "setBadge") {
+    const text = message.count > 0 ? message.count.toString() : "";
+    browser.action.setBadgeText({ text });
+    if (message.count > 0) {
+      browser.action.setBadgeBackgroundColor({ color: "#666" });
+    }
+    logDebug(`[setBadge] Badge set to "${text}"`);
   }
 });
