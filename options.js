@@ -11,7 +11,7 @@ function setTextareaHeight() {
   const lines = textarea.value.split('\n').length;
   const maxLines = 30;
   const lineHeight = 20; // Approximate line height in pixels
-  textarea.style.height = `${Math.min(lines, maxLines) * lineHeight + 30}px`;
+  textarea.style.height = `${Math.min(lines, maxLines) * lineHeight + 10}px`;
   textarea.style.overflowY = lines > maxLines ? 'auto' : 'hidden';
 }
 
@@ -51,8 +51,29 @@ function showSaveMessage(messageText, isSuccess) {
   }, 3000);
 }
 
+function exportBlacklist() {
+  browser.storage.local.get('blacklist').then(result => {
+    const blacklist = result.blacklist || [];
+    const content = blacklist.join('\n');
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const isoDate = new Date().toISOString().split('T')[0]; // Use only the date part (YYYY-MM-DD)
+    a.download = `pixiv_blacklist_${isoDate}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showSaveMessage('Blacklist exported successfully', true);
+  }).catch(error => {
+    console.error('[exportBlacklist] Error:', error);
+    showSaveMessage('Failed to export blacklist', false);
+  });
+}
 const textarea = document.getElementById('blacklist');
 const form = document.getElementById('options-form');
+const exportButton = document.getElementById('exportBlacklist');
 
 textarea.addEventListener('input', debounce(() => {
   setTextareaHeight();
@@ -75,6 +96,7 @@ form.addEventListener('submit', (e) => {
   }
 });
 
+exportButton.addEventListener('click', exportBlacklist);
 browser.storage.local.get(['blacklist', 'removeSameAuthor']).then(result => {
   textarea.value = (result.blacklist || []).join('\n');
   document.getElementById('removeSameAuthor').checked = result.removeSameAuthor || false;
