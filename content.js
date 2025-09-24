@@ -42,14 +42,14 @@ const selectors = {
   artworkGrid: 'ul.sc-bf8cea3f-1.bCxfvI',
   tagGrid: 'ul.sc-98699d11-1.hHLaTl',
   userLink: 'a[data-gtm-user-id], a[href*="/users/"], a[href*="/en/users/"]',
-  artworkHeader: 'h2.sc-a6755c3a-3.glkuHK',
-  tagOuterDiv: 'div.sc-a6755c3a-0.dlidhK',
-  tagHeader: 'h3.sc-a6755c3a-3.glkuHK',
-  tagInnerDiv: 'div.sc-a6755c3a-1.fStzca',
-  tagAnchor: 'div.sc-a6755c3a-2.eYChEb',
-  tagCount: 'div.sc-b5e6ab10-0.hfQbJx',
+  artworkHeader: 'div div h2, div div h3', // Target both h2 and h3 within nested divs
+  tagOuterDiv: 'div', // Generic to catch any outer div
+  tagHeader: 'h3', // Generic to catch any h3
+  tagInnerDiv: 'div', // Generic to catch any inner div
+  tagAnchor: 'div', // Generic to catch any anchor div
+  tagCount: 'div span', // Generic to catch count spans
   followButton: 'button[data-gtm-user-id]',
-  profileLink: 'section.sc-7d1a8035-1 a[data-gtm-value]'
+  profileLink: 'section a[data-gtm-value]'
 };
 
 function updateCounter() {
@@ -60,7 +60,12 @@ function updateCounter() {
     } else {
       logDebug('[updateCounter] Counter element not found, cannot update counter');
     }
-    browser.runtime.sendMessage({ action: "setBadge", count: removedCount });
+    if (document.visibilityState === 'visible') {
+      browser.runtime.sendMessage({ action: "setBadge", count: removedCount });
+      logDebug(`[updateCounter] Updated badge with count: ${removedCount} (tab is visible)`);
+    } else {
+      logDebug(`[updateCounter] Skipped badge update (tab is not visible)`);
+    }
   } catch (error) {
     console.error('[updateCounter] Error:', error);
   }
@@ -131,7 +136,7 @@ function updateAllArtworks(attempt = 1, maxAttempts = 3) {
   }
 }
 
-function createCounter(attempt = 1, maxAttempts = 3) {
+function createCounter(attempt = 1, maxAttempts = 4) {
   return new Promise(resolve => {
     const delay = attempt === 1 ? 1500 : 2000;
     logDebug(`[createCounter] Scheduling attempt ${attempt}/${maxAttempts} in ${delay}ms at ${new Date().toISOString()}`);
@@ -147,15 +152,23 @@ function createCounter(attempt = 1, maxAttempts = 3) {
         
         let anchor = null;
         if (isArtwork) {
-          anchor = document.querySelector(selectors.artworkHeader);
-          logDebug(`[createCounter] Artwork page: h2.glkuHK anchor ${anchor ? 'found' : 'not found'}`);
+          const headers = document.querySelectorAll(selectors.artworkHeader);
+          for (const header of headers) {
+            const text = header.textContent.trim();
+            if (['Recommended works', 'Related works', 'Works', 'Illustrations'].includes(text)) {
+              anchor = header;
+              logDebug(`[createCounter] Artwork page: Found ${header.tagName.toLowerCase()} with text "${text}"`);
+              break;
+            }
+          }
+          logDebug(`[createCounter] Artwork page: anchor ${anchor ? 'found' : 'not found'}`);
         } else {
           const outerDivs = document.querySelectorAll(selectors.tagOuterDiv);
           for (const outerDiv of outerDivs) {
             const h3 = outerDiv.querySelector(selectors.tagHeader);
             if (h3) {
-              const h3Text = h3.textContent;
-              if (/^(Illustrations and Manga|Works)$/i.test(h3Text) && !/popular/i.test(h3Text)) {
+              const h3Text = h3.textContent.trim();
+              if (h3Text.includes('Works') || h3Text.includes('Illustrations') || h3Text.includes('Manga')) {
                 anchor = h3;
                 logDebug(`[createCounter] Tag page: Selected h3 with text "${h3Text}" as anchor`);
                 break;
@@ -164,6 +177,18 @@ function createCounter(attempt = 1, maxAttempts = 3) {
           }
         }
 
+        if (!anchor) {
+          // Fallback: try finding any h3 with "Works" or "Illustrations"
+          const headers = document.querySelectorAll('h3');
+          for (const header of headers) {
+            const text = header.textContent.trim();
+            if (text.includes('Works') || text.includes('Illustrations') || text.includes('Manga')) {
+              anchor = header;
+              logDebug(`[createCounter] Fallback: Found h3 with text "${text}"`);
+              break;
+            }
+          }
+        }
         if (anchor) {
           counterElement = document.createElement('span');
           counterElement.className = 'pixiv-recommendation-counter';
@@ -174,7 +199,7 @@ function createCounter(attempt = 1, maxAttempts = 3) {
           counterElement.style.verticalAlign = 'middle';
           counterElement.textContent = `Removed: ${removedCount}`;
           anchor.insertAdjacentElement('afterend', counterElement);
-          logDebug(`[createCounter] Inserted counter after ${isArtwork ? 'h2' : 'h3'}`);
+          logDebug(`[createCounter] Inserted counter after ${anchor.tagName.toLowerCase()}`);
 
           // Observe a higher-level parent (e.g., <main> or <body>) for DOM changes
           const parent = document.querySelector('main') || document.body;
@@ -446,6 +471,10 @@ function updatePage() {
       logDebug('[updatePage] Non-filterable page, skipping recommendation processing');
       removedCount = 0;
       currentAuthorId = null;
+      if (document.visibilityState === 'visible') {
+        browser.runtime.sendMessage({ action: "setBadge", count: 0 });
+        logDebug('[updatePage] Non-filterable page, reset badge to 0 (tab is visible)');
+      }
     }
   } catch (error) {
     console.error('[updatePage] Error:', error);
@@ -457,15 +486,28 @@ async function main() {
     logDebug('[main] main function started');
     await loadSettings();
     
-    // Initialize thumbnail fixer
+    // Initialize thumbnail fixer for all Pixiv pages
     ThumbnailFixer.init(thumbnailFixerEnabled);
     
-    updatePage();
+    // Process user filtering only on filterable pages
+    if (isFilterablePage()) {
+      updatePage();
+    } else {
+      logDebug('[main] Non-filterable page, skipping user filtering');
+      removedCount = 0;
+      currentAuthorId = null;
+      if (document.visibilityState === 'visible') {
+        browser.runtime.sendMessage({ action: "setBadge", count: 0 });
+        logDebug('[main] Non-filterable page, reset badge to 0 (tab is visible)');
+      }
+    }
     
     browser.runtime.onMessage.addListener((message) => {
       if (message.action === "refreshBlacklist") {
         logDebug('[main] Received refreshBlacklist message');
         loadSettings().then(() => {
+          // Update thumbnail fixer on all pages
+          ThumbnailFixer.setEnabled(thumbnailFixerEnabled);
             if (isFilterablePage()) {
               logDebug('[main] Processing refreshBlacklist on filterable page');
               refreshArtworks();
@@ -478,15 +520,47 @@ async function main() {
       if (window.location.pathname !== lastPathname) {
         logDebug('[main] Navigation detected via URL change from', lastPathname, 'to', window.location.pathname);
         lastPathname = window.location.pathname;
-        updatePage();
+        // Reinitialize thumbnail fixer on navigation
+        ThumbnailFixer.setEnabled(thumbnailFixerEnabled);
+        if (isFilterablePage()) {
+          updatePage();
+        } else {
+          logDebug('[main] Non-filterable page, skipping user filtering');
+          removedCount = 0;
+          currentAuthorId = null;
+          if (document.visibilityState === 'visible') {
+            browser.runtime.sendMessage({ action: "setBadge", count: 0 });
+            logDebug('[main] Non-filterable page, reset badge to 0 (tab is visible)');
+          }
+        }
       }
     });
     const titleObserver = new MutationObserver(() => {
       logDebug('[titleObserver] Title changed, updating page');
-      updatePage();
+      // Reinitialize thumbnail fixer on title change
+      ThumbnailFixer.setEnabled(thumbnailFixerEnabled);
+      if (isFilterablePage()) {
+        updatePage();
+      } else {
+        logDebug('[titleObserver] Non-filterable page, skipping user filtering');
+        removedCount = 0;
+        currentAuthorId = null;
+        if (document.visibilityState === 'visible') {
+          browser.runtime.sendMessage({ action: "setBadge", count: 0 });
+          logDebug('[titleObserver] Non-filterable page, reset badge to 0 (tab is visible)');
+        }
+      }
     });
     titleObserver.observe(document.querySelector('title'), { childList: true });
-    logDebug('[main] Navigation listeners set up');
+    // Add visibilitychange listener to update badge when tab becomes active
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        logDebug('[main] Tab became visible, updating badge');
+        browser.runtime.sendMessage({ action: "setBadge", count: removedCount });
+      }
+    });
+    
+    logDebug('[main] Navigation and visibility listeners set up');
   } catch (error) {
     console.error('[main] Error:', error);
   }
