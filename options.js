@@ -87,7 +87,12 @@ form.addEventListener('submit', (e) => {
   showErrorMessage(result);
   if (result.isValid) {
     const removeSameAuthor = document.getElementById('removeSameAuthor').checked;
-    browser.storage.local.set({ blacklist: result.ids, removeSameAuthor }).then(() => {
+    const thumbnailFixer = document.getElementById('thumbnailFixer').checked;
+    browser.storage.local.set({ 
+      blacklist: result.ids, 
+      removeSameAuthor,
+      thumbnailFixer 
+    }).then(() => {
       showSaveMessage('Settings saved', true);
       browser.runtime.sendMessage({ action: "refreshBlacklist" });
     });
@@ -97,9 +102,11 @@ form.addEventListener('submit', (e) => {
 });
 
 exportButton.addEventListener('click', exportBlacklist);
-browser.storage.local.get(['blacklist', 'removeSameAuthor']).then(result => {
+
+browser.storage.local.get(['blacklist', 'removeSameAuthor', 'thumbnailFixer']).then(result => {
   textarea.value = (result.blacklist || []).join('\n');
   document.getElementById('removeSameAuthor').checked = result.removeSameAuthor || false;
+  document.getElementById('thumbnailFixer').checked = result.thumbnailFixer || false;
   setTextareaHeight();
   const validationResult = parseBlacklist(textarea.value);
   showErrorMessage(validationResult);

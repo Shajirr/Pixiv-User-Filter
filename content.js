@@ -1,4 +1,4 @@
-const DEBUG = false; // Toggle for debug logging
+const DEBUG = true; // Toggle for debug logging
 
 function logDebug(...args) {
   if (DEBUG) console.log(...args);
@@ -11,6 +11,7 @@ let recommendationObservers = [];
 let lastPathname = window.location.pathname;
 let currentAuthorId = null;
 let processedLiElements = new WeakSet();
+let thumbnailFixerEnabled = false;
 
 function debounce(fn, delay) {
   let timeoutId;
@@ -22,10 +23,16 @@ function debounce(fn, delay) {
 
 async function loadSettings() {
   try {
-    const result = await browser.storage.local.get(['blacklist', 'removeSameAuthor']);
+    const result = await browser.storage.local.get(['blacklist', 'removeSameAuthor', 'thumbnailFixer']);
     settings.blacklist = new Set(result.blacklist || []);
     settings.removeSameAuthor = result.removeSameAuthor || false;
-    logDebug(`[loadSettings] Loaded settings: blacklist=${[...settings.blacklist].join(', ')}, removeSameAuthor=${settings.removeSameAuthor}`);
+    thumbnailFixerEnabled = result.thumbnailFixer || false;
+    
+    logDebug(`[loadSettings] Loaded settings: blacklist=${[...settings.blacklist].join(', ')}, removeSameAuthor=${settings.removeSameAuthor}, thumbnailFixer=${thumbnailFixerEnabled}`);
+        
+    // Update thumbnail fixer after loading settings
+    ThumbnailFixer.setEnabled(thumbnailFixerEnabled);
+    
   } catch (error) {
     console.error('[loadSettings] Error:', error);
   }
@@ -362,7 +369,8 @@ function setupArtworkObserver() {
 
 function refreshArtworks() {
   try {
-    logDebug('[refreshArtworks] Refreshing artworks due to blacklist update');
+    logDebug('[refreshArtworks] Refreshing artworks due to settings update');
+
     if (isFilterablePage()) {
       // Clear processed elements cache when blacklist changes
       processedLiElements = new WeakSet();
@@ -448,13 +456,24 @@ async function main() {
   try {
     logDebug('[main] main function started');
     await loadSettings();
+    
+    // Initialize thumbnail fixer
+    ThumbnailFixer.init(thumbnailFixerEnabled);
+    
     updatePage();
+    
     browser.runtime.onMessage.addListener((message) => {
-      if (message.action === "refreshBlacklist" && isFilterablePage()) {
-        logDebug('[main] Received refreshBlacklist message on filterable page');
-        loadSettings().then(() => refreshArtworks());
+      if (message.action === "refreshBlacklist") {
+        logDebug('[main] Received refreshBlacklist message');
+        loadSettings().then(() => {
+            if (isFilterablePage()) {
+              logDebug('[main] Processing refreshBlacklist on filterable page');
+              refreshArtworks();
+            }
+        });
       }
     });
+    
     window.addEventListener('popstate', () => {
       if (window.location.pathname !== lastPathname) {
         logDebug('[main] Navigation detected via URL change from', lastPathname, 'to', window.location.pathname);
