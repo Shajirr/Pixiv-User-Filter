@@ -1,37 +1,48 @@
 {
   "manifest_version": 3,
   "name": "Pixiv User Filter",
-  "version": "2025.8.24",
+  "version": "2025.8.25",
   "description": "Hides Pixiv artworks of blacklisted users",
+  
   "browser_specific_settings": {
     "gecko": {
-      "id": "{5fb5b4a4-6485-4e28-bd6d-62837f0c7340}"
+      "id": "{5fb5b4a4-6485-4e28-bd6d-62837f0c7340}",
+	  "data_collection_permissions": {
+        "required": ["none"]
+      }
     }
   },
+  
   "permissions": [
     "storage",
     "contextMenus",
     "notifications",
     "activeTab"
   ],
+  
   "host_permissions": [
     "*://*.pixiv.net/*"
   ],
+  
   "action": {
     "default_title": "Pixiv User Filter"
   },
+  
   "background": {
     "scripts": ["contextMenu.js"]
   },
+  
   "content_scripts": [
     {
       "matches": ["*://*.pixiv.net/*"],
       "js": ["thumbnailFixer.js", "content.js"]
     }
   ],
+  
   "options_ui": {
     "page": "options.html"
   },
+  
   "icons": {
     "16": "icon.svg",
     "32": "icon.svg",
