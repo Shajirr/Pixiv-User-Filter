@@ -39,8 +39,8 @@ async function loadSettings() {
 }
 
 const selectors = {
-  artworkGrid: 'ul.sc-bf8cea3f-1.bCxfvI',
-  tagGrid: 'ul.sc-98699d11-1.hHLaTl',
+  artworkGrid: 'ul.sc-e83d358-1.gIHHFW',
+  tagGrid: 'ul.sc-5b55504a-1.jQzvLN',
   userLink: 'a[data-gtm-user-id], a[href*="/users/"], a[href*="/en/users/"]',
   artworkHeader: 'div div h2, div div h3', // Target both h2 and h3 within nested divs
   tagOuterDiv: 'div', // Generic to catch any outer div
