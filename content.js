@@ -39,8 +39,6 @@ async function loadSettings() {
 }
 
 const selectors = {
-  artworkGrid: 'ul.sc-e83d358-1.gIHHFW',
-  tagGrid: 'ul.sc-5b55504a-1.jQzvLN',
   userLink: 'a[data-gtm-user-id], a[href*="/users/"], a[href*="/en/users/"]',
   artworkHeader: 'div div h2, div div h3', // Target both h2 and h3 within nested divs
   tagOuterDiv: 'div', // Generic to catch any outer div
@@ -71,13 +69,54 @@ function updateCounter() {
   }
 }
 
+function findArtworkGridsByContent() {
+    const allULs = document.querySelectorAll('ul');
+    const candidates = [];
+    
+    for (const ul of allULs) {
+      const artworkLinks = ul.querySelectorAll('a[href*="/artworks/"]');
+      const hasImages = ul.querySelector('li img');
+      // Must have at least 1 artwork link and contain images
+      if (artworkLinks.length > 0 && hasImages) {
+        candidates.push(ul);
+        logDebug(`[findArtworkGridsByContent] Candidate grid with ${artworkLinks.length} artworks`, ul);
+      }
+    }
+  logDebug(`[findArtworkGridsByContent] Found ${candidates.length} valid grid(s)`);
+  return candidates;
+}
+
 function getArtworkGridContainers() {
-  const isArtwork = /\/en\/artworks\/\d+$/.test(window.location.pathname);
-  logDebug(`[getArtworkGridContainers] Selecting artwork grid containers for ${isArtwork ? 'artwork' : 'tag'} page`);
-  const selector = isArtwork ? selectors.artworkGrid : selectors.tagGrid;
-  const containers = Array.from(document.querySelectorAll(selector));
-  logDebug(`[getArtworkGridContainers] Found ${containers.length} grid containers`);
-  return containers;
+  const isArtworkPage = /\/en\/artworks\/\d+$/.test(window.location.pathname);
+  logDebug(`[getArtworkGridContainers] Detecting grids on ${isArtworkPage ? 'artwork' : 'tag'} page`);
+
+  let grids = [];
+
+  if (isArtworkPage) {
+    // First use stable GTM class
+    const gtmContainer = document.querySelector('div.gtm-illust-recommend-zone');
+    if (gtmContainer) {
+      const ul = gtmContainer.querySelector('ul');
+      if (ul && ul.querySelector('li a[href*="/artworks/"]')) {
+        grids.push(ul);
+        logDebug('[getArtworkGridContainers] Found grid via gtm-illust-recommend-zone');
+      }
+    }
+
+    // Fallback - content-based search
+    if (grids.length === 0) {
+      logDebug('[getArtworkGridContainers] Falling back to content-based detection');
+      grids = findArtworkGridsByContent();
+    }
+  } else {
+    // Tag page - content-based search only
+    grids = findArtworkGridsByContent();
+  }
+
+  // Dedupe
+  grids = [...new Set(grids)];
+  logDebug(`[getArtworkGridContainers] Final: ${grids.length} grid(s) found`);
+  return grids;
 }
 
 function updateAllArtworks(attempt = 1, maxAttempts = 3) {
