@@ -39,7 +39,7 @@ async function loadSettings() {
 }
 
 const selectors = {
-  userLink: 'a[data-gtm-user-id], a[href*="/users/"], a[href*="/en/users/"]',
+  userLink: 'a[data-gtm-user-id], a[href*="/users/"]',
   artworkHeader: 'div div h2, div div h3', // Target both h2 and h3 within nested divs
   tagOuterDiv: 'div', // Generic to catch any outer div
   tagHeader: 'h3', // Generic to catch any h3
@@ -47,7 +47,8 @@ const selectors = {
   tagAnchor: 'div', // Generic to catch any anchor div
   tagCount: 'div span', // Generic to catch count spans
   followButton: 'button[data-gtm-user-id]',
-  profileLink: 'section a[data-gtm-value]'
+  profileLink: 'section a[data-gtm-value]',
+  recommendZone: 'div.gtm-illust-recommend-zone' // Recommendation section
 };
 
 function updateCounter() {
@@ -94,7 +95,7 @@ function getArtworkGridContainers() {
 
   if (isArtworkPage) {
     // First use stable GTM class
-    const gtmContainer = document.querySelector('div.gtm-illust-recommend-zone');
+    const gtmContainer = document.querySelector(selectors.recommendZone);
     if (gtmContainer) {
       const ul = gtmContainer.querySelector('ul');
       if (ul && ul.querySelector('li a[href*="/artworks/"]')) {
@@ -175,7 +176,26 @@ function updateAllArtworks(attempt = 1, maxAttempts = 3) {
   }
 }
 
-function createCounter(attempt = 1, maxAttempts = 4) {
+function findRecommendationHeader() {
+  const recommendZone = document.querySelector(selectors.recommendZone);
+  
+  logDebug`[findRecommendationHeader] recommendZone: ${recommendZone ? 'found' : 'not found'}`;
+  
+  if (recommendZone) {
+    const headerContainer = recommendZone.previousElementSibling;
+    logDebug`[findRecommendationHeader] headerContainer: ${headerContainer ? 'found' : 'not found'}`;
+    
+    if (headerContainer) {
+      const h2 = headerContainer.querySelector('h2');
+      logDebug`[findRecommendationHeader] h2: ${h2 ? 'found' : 'not found'}`;
+      return h2;
+    }
+  }
+  logDebug('[findRecommendationHeader] No header found');
+  return null;
+}
+
+function createCounter(attempt = 1, maxAttempts = 3) {
   return new Promise(resolve => {
     const delay = attempt === 1 ? 1500 : 2000;
     logDebug(`[createCounter] Scheduling attempt ${attempt}/${maxAttempts} in ${delay}ms at ${new Date().toISOString()}`);
@@ -186,22 +206,26 @@ function createCounter(attempt = 1, maxAttempts = 4) {
         const existingCounters = document.querySelectorAll('span.pixiv-recommendation-counter');
         existingCounters.forEach(counter => counter.remove());
 
-        const isArtwork = /\/en\/artworks\/\d+$/.test(window.location.pathname);
+        const isArtwork = /\/(?:en\/)?artworks\/\d+$/.test(window.location.pathname);
+        
         logDebug(`[createCounter] Page type: ${isArtwork ? 'Artwork' : 'Tag'} (URL: ${window.location.pathname})`);
         
         let anchor = null;
+        
         if (isArtwork) {
-          const headers = document.querySelectorAll(selectors.artworkHeader);
-          for (const header of headers) {
-            const text = header.textContent.trim();
-            if (['Recommended works', 'Related works', 'Works', 'Illustrations'].includes(text)) {
-              anchor = header;
-              logDebug(`[createCounter] Artwork page: Found ${header.tagName.toLowerCase()} with text "${text}"`);
-              break;
-            }
-          }
+          anchor = findRecommendationHeader();  
           logDebug(`[createCounter] Artwork page: anchor ${anchor ? 'found' : 'not found'}`);
         } else {
+          // check if it's an english tag page (has /en/ prefix)
+          const isEnglishTagPage = /\/en\/tags\//.test(window.location.pathname);
+            
+          // if not in english, don't create the counter
+          if (!isEnglishTagPage) {
+            logDebug('[createCounter] Non-English tag page detected, skipping counter creation');
+            resolve(true);
+            return;
+          }
+            
           const outerDivs = document.querySelectorAll(selectors.tagOuterDiv);
           for (const outerDiv of outerDivs) {
             const h3 = outerDiv.querySelector(selectors.tagHeader);
@@ -326,7 +350,7 @@ function processLi(li, blacklist, authorId, removeSameAuthor) {
 
     userId = userLink.getAttribute('data-gtm-user-id');
     if (!userId) {
-      const match = userLink.href.match(/\/(?:en\/)?users\/(\d+)/);
+      const match = userLink.href.match(/pixiv\.net\/(?:en\/)?users\/(\d+)/i);
       userId = match ? match[1] : null;
     }
 
@@ -356,7 +380,7 @@ function processLi(li, blacklist, authorId, removeSameAuthor) {
 function processArtworks(blacklist, authorId, removeSameAuthor) {
   try {
     logDebug('[processArtworks] Starting artwork processing');
-    logDebug(`[processArtworks] Blacklist contains ${blacklist.size} user IDs: ${[...blacklist].join(', ')}`);
+    logDebug(`[processArtworks] Blacklist contains ${blacklist.size} user IDs`);
     logDebug(`[processArtworks] Author ID: ${authorId}, removeSameAuthor: ${removeSameAuthor}`);
     
     settings.blacklist = blacklist;
@@ -369,10 +393,28 @@ function processArtworks(blacklist, authorId, removeSameAuthor) {
 }
 
 function isFilterablePage() {
-  const regex = /\/en\/(artworks\/\d+|tags\/.*)$/;
+  const regex = /\/(?:en\/)?(artworks\/\d+|tags\/.*)$/;
   logDebug(`[isFilterablePage] Checking URL ${window.location.pathname}: ${regex.test(window.location.pathname) ? 'filterable' : 'non-filterable'}`);
   return regex.test(window.location.pathname);
 }
+
+function waitForRecommendationGrid() {
+  const observer = new MutationObserver(() => {
+    const zone = document.querySelector(selectors.recommendZone);
+    if (!zone) return;
+
+    const ul = zone.querySelector('ul');
+    if (ul && ul.querySelector('li a[href*="/artworks/"]')) {
+      logDebug('[waitForRecommendationGrid] <ul> with artworks loaded → setting up observer');
+      observer.disconnect();
+      setupArtworkObserver();
+    }
+  });
+
+  observer.observe(document.body, { childList: true, subtree: true });
+  logDebug('[waitForRecommendationGrid] Watching for recommendation grid on artwork page');
+}
+
 
 function setupArtworkObserver() {
   try {
@@ -433,34 +475,42 @@ function setupArtworkObserver() {
 
 function refreshArtworks() {
   try {
-    logDebug('[refreshArtworks] Refreshing artworks due to settings update');
+    logDebug('[refreshArtworks] Refreshing artworks');
 
     if (isFilterablePage()) {
       // Clear processed elements cache when blacklist changes
       processedLiElements = new WeakSet();
       logDebug('[refreshArtworks] Cleared processed elements cache');
-      
-      logDebug(`[refreshArtworks] Remove same author toggle: ${settings.removeSameAuthor}`);
-      logDebug(`[refreshArtworks] Blacklist: ${[...settings.blacklist].join(', ')}`);
       removedCount = 0; // Reset for all pages during blacklist update
       logDebug('[refreshArtworks] Reset removedCount to 0 for blacklist update');
+
+      recommendationObservers.forEach(observer => observer.disconnect());
+      recommendationObservers = [];
+      logDebug('[refreshArtworks] Disconnected previous recommendation observers for blacklist update');
+      
+      // Process artworks immediately without waiting for counter
+      processArtworks(settings.blacklist, currentAuthorId, settings.removeSameAuthor);
+      
+      setupArtworkObserver();
+      
+      // Create/update counter only if needed (async, non-blocking)
       if (!counterElement) {
         createCounter().then(success => {
           if (!success) {
             logDebug('[refreshArtworks] Proceeding with artwork processing despite counter creation failure');
           }
-          recommendationObservers.forEach(observer => observer.disconnect());
-          recommendationObservers = [];
-		  logDebug('[refreshArtworks] Disconnected previous recommendation observers for blacklist update');
-          processArtworks(settings.blacklist, currentAuthorId, settings.removeSameAuthor);
-          setupArtworkObserver();
         });
-      } else {
-        recommendationObservers.forEach(observer => observer.disconnect());
-        recommendationObservers = [];
-		logDebug('[refreshArtworks] Disconnected previous recommendation observers for blacklist update');
-        processArtworks(settings.blacklist, currentAuthorId, settings.removeSameAuthor);
-        setupArtworkObserver();
+      } 
+      
+      // Create counter only if needed (async, non-blocking)
+      if (!counterElement) {
+        // Skip counter creation only for non-English tag pages
+        const isNonEnglishTagPage = /\/tags\//.test(window.location.pathname) && !/\/en\/tags\//.test(window.location.pathname);
+        if (!isNonEnglishTagPage) {
+          createCounter();
+        } else {
+          logDebug('[refreshArtworks] non-English tag page, skip inline counter creation');  
+        }
       }
     }
   } catch (error) {
@@ -487,11 +537,10 @@ function updatePage() {
     }
     
     if (isFilterablePage()) {
-      logDebug('[updatePage] Filterable page detected, processing recommendations');
+      logDebug('[updatePage] Filterable page detected, processing');
       logDebug(`[updatePage] Remove same author toggle: ${settings.removeSameAuthor}`);
-      logDebug(`[updatePage] Blacklist: ${[...settings.blacklist].join(', ')}`);
       
-      const isArtwork = /\/en\/artworks\/\d+$/.test(window.location.pathname);
+      const isArtwork = /\/(?:en\/)?artworks\/\d+$/.test(window.location.pathname);
       const authorPromise = isArtwork ? getPageAuthorId() : Promise.resolve(null);
       
       authorPromise.then(authorId => {
@@ -500,7 +549,13 @@ function updatePage() {
         removedCount = 0;
         createCounter().then(() => {
           processArtworks(settings.blacklist, currentAuthorId, settings.removeSameAuthor && isArtwork);
-          setupArtworkObserver();
+          
+          if (isArtwork) {
+            waitForRecommendationGrid(); // only wait on artwork pages
+          } else {
+            setupArtworkObserver(); // tag pages - grids are already loaded
+          }
+          
           updateCounter();
         });
       }).catch(error => {

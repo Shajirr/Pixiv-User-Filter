@@ -89,7 +89,7 @@ browser.contextMenus.removeAll().then(() => {
 
 browser.contextMenus.onClicked.addListener((info, tab) => {
   const linkUrl = info.linkUrl;
-  const match = linkUrl.match(/\/en\/users\/(\d+)/);
+  const match = linkUrl.match(/pixiv\.net\/(?:en\/)?users\/(\d+)/i);
   if (!match) {
     logDebug("Invalid user URL:", linkUrl);
     showNotification("Pixiv User Filter", "Invalid user URL. Please select a valid user profile link.");
