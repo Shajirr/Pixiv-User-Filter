@@ -88,7 +88,7 @@ function findArtworkGridsByContent() {
 }
 
 function getArtworkGridContainers() {
-  const isArtworkPage = /\/en\/artworks\/\d+$/.test(window.location.pathname);
+  const isArtworkPage = /\/(?:en\/)?artworks\/\d+$/.test(window.location.pathname);
   logDebug(`[getArtworkGridContainers] Detecting grids on ${isArtworkPage ? 'artwork' : 'tag'} page`);
 
   let grids = [];
