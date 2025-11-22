@@ -12,6 +12,8 @@ let lastPathname = window.location.pathname;
 let currentAuthorId = null;
 let processedLiElements = new WeakSet();
 let thumbnailFixerEnabled = false;
+let limitRecommendations = false;
+let maxRecommendations = 180;
 
 function debounce(fn, delay) {
   let timeoutId;
@@ -23,10 +25,15 @@ function debounce(fn, delay) {
 
 async function loadSettings() {
   try {
-    const result = await browser.storage.local.get(['blacklist', 'removeSameAuthor', 'thumbnailFixer']);
+	const result = await browser.storage.local.get(['blacklist', 'removeSameAuthor', 'thumbnailFixer', 'limitRecommendations', 'maxRecommendations']);
     settings.blacklist = new Set(result.blacklist || []);
     settings.removeSameAuthor = result.removeSameAuthor || false;
     thumbnailFixerEnabled = result.thumbnailFixer || false;
+	
+	limitRecommendations = result.limitRecommendations || false;
+	maxRecommendations = result.maxRecommendations !== undefined ? result.maxRecommendations : 180;
+	
+	logDebug(`[loadSettings] limitRecommendations=${limitRecommendations}, maxRecommendations=${maxRecommendations}`);
     
     logDebug(`[loadSettings] Loaded settings: blacklist=${[...settings.blacklist].join(', ')}, removeSameAuthor=${settings.removeSameAuthor}, thumbnailFixer=${thumbnailFixerEnabled}`);
         
@@ -521,6 +528,8 @@ function refreshArtworks() {
 function updatePage() {
   try {
     logDebug('[updatePage] Updating page for URL:', window.location.pathname);
+	
+	
     
     // Clear processed elements cache on page change
     processedLiElements = new WeakSet();
@@ -543,6 +552,11 @@ function updatePage() {
       const isArtwork = /\/(?:en\/)?artworks\/\d+$/.test(window.location.pathname);
       const authorPromise = isArtwork ? getPageAuthorId() : Promise.resolve(null);
       
+	  if (isArtwork) {
+		browser.runtime.sendMessage({ action: "resetBatchCount" });
+		logDebug('[updatePage] Sent resetBatchCount message for artwork page');
+	  }
+	  
       authorPromise.then(authorId => {
         currentAuthorId = authorId;
         logDebug(`[updatePage] Final author ID: ${authorId}`);
@@ -579,7 +593,7 @@ async function main() {
   try {
     logDebug('[main] main function started');
     await loadSettings();
-    
+
     // Initialize thumbnail fixer for all Pixiv pages
     ThumbnailFixer.init(thumbnailFixerEnabled);
     
@@ -600,12 +614,12 @@ async function main() {
       if (message.action === "refreshBlacklist") {
         logDebug('[main] Received refreshBlacklist message');
         loadSettings().then(() => {
-          // Update thumbnail fixer on all pages
-          ThumbnailFixer.setEnabled(thumbnailFixerEnabled);
-            if (isFilterablePage()) {
-              logDebug('[main] Processing refreshBlacklist on filterable page');
-              refreshArtworks();
-            }
+			// Update thumbnail fixer on all pages
+			ThumbnailFixer.setEnabled(thumbnailFixerEnabled);
+			if (isFilterablePage()) {
+			  logDebug('[main] Processing refreshBlacklist on filterable page');
+			  refreshArtworks();
+			}
         });
       }
     });

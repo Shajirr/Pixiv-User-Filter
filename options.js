@@ -71,9 +71,28 @@ function exportBlacklist() {
     showSaveMessage('Failed to export blacklist', false);
   });
 }
+
+function updateMaxRecValue(value) {
+  document.getElementById('maxRecValue').textContent = value;
+}
+
+function toggleSliderState(enabled) {
+  const sliderContainer = document.querySelector('.slider-container');
+  const maxRecSlider = document.getElementById('maxRecommendations');
+  if (enabled) {
+    sliderContainer.classList.remove('disabled');
+    maxRecSlider.disabled = false;
+  } else {
+    sliderContainer.classList.add('disabled');
+    maxRecSlider.disabled = true;
+  }
+}
+
 const textarea = document.getElementById('blacklist');
 const form = document.getElementById('options-form');
 const exportButton = document.getElementById('exportBlacklist');
+const limitCheckbox = document.getElementById('limitRecommendations');
+const maxRecSlider = document.getElementById('maxRecommendations');
 
 textarea.addEventListener('input', debounce(() => {
   setTextareaHeight();
@@ -88,10 +107,15 @@ form.addEventListener('submit', (e) => {
   if (result.isValid) {
     const removeSameAuthor = document.getElementById('removeSameAuthor').checked;
     const thumbnailFixer = document.getElementById('thumbnailFixer').checked;
+	const limitRecommendations = limitCheckbox.checked;
+	const maxRecommendations = parseInt(maxRecSlider.value, 10);
+	
     browser.storage.local.set({ 
       blacklist: result.ids, 
       removeSameAuthor,
-      thumbnailFixer 
+      thumbnailFixer,
+	  limitRecommendations, 
+	  maxRecommendations
     }).then(() => {
       showSaveMessage('Settings saved', true);
       browser.runtime.sendMessage({ action: "refreshBlacklist" });
@@ -103,10 +127,22 @@ form.addEventListener('submit', (e) => {
 
 exportButton.addEventListener('click', exportBlacklist);
 
-browser.storage.local.get(['blacklist', 'removeSameAuthor', 'thumbnailFixer']).then(result => {
+maxRecSlider.addEventListener('input', (e) => {
+  updateMaxRecValue(e.target.value);
+});
+
+limitCheckbox.addEventListener('change', (e) => {
+  toggleSliderState(e.target.checked);
+});
+
+browser.storage.local.get(['blacklist', 'removeSameAuthor', 'thumbnailFixer', 'limitRecommendations', 'maxRecommendations']).then(result => {
   textarea.value = (result.blacklist || []).join('\n');
   document.getElementById('removeSameAuthor').checked = result.removeSameAuthor || false;
   document.getElementById('thumbnailFixer').checked = result.thumbnailFixer || false;
+  limitCheckbox.checked = result.limitRecommendations !== undefined ? result.limitRecommendations : false;
+  maxRecSlider.value = result.maxRecommendations || 180;
+  updateMaxRecValue(maxRecSlider.value);
+  toggleSliderState(limitCheckbox.checked);
   setTextareaHeight();
   const validationResult = parseBlacklist(textarea.value);
   showErrorMessage(validationResult);

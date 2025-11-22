@@ -17,7 +17,9 @@
     "storage",
     "contextMenus",
     "notifications",
-    "activeTab"
+    "activeTab",
+	"webRequest",
+	"webRequestBlocking"
   ],
   
   "host_permissions": [
@@ -29,7 +31,7 @@
   },
   
   "background": {
-    "scripts": ["contextMenu.js"]
+    "scripts": ["background.js"]
   },
   
   "content_scripts": [

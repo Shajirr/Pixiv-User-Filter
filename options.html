@@ -92,6 +92,15 @@
             color: var(--in-content-text-color, #555);
             margin-top: 5px;
         }
+		.slider-container.disabled {
+		opacity: 0.5;
+		pointer-events: none;
+		}
+		.slider-container.disabled label,
+		.slider-container.disabled span {
+		color: var(--in-content-text-color, #888); /* Grey text */
+		}
+		
         /* Dark mode adjustments */
         @media (prefers-color-scheme: dark) {
             textarea {
@@ -119,7 +128,12 @@
             .description {
                 color: var(--in-content-text-color, #aaa);
             }
+			.slider-container.disabled label,
+			.slider-container.disabled span {
+				color: var(--in-content-text-color, #888); /* Grey text in dark mode */
+			}
         }
+		
     </style>
 </head>
 <body>
@@ -135,6 +149,15 @@
             <input type="checkbox" id="thumbnailFixer">
             Restore proper uncropped thumbnails
         </label>
+		<label>
+			<input type="checkbox" id="limitRecommendations">
+			Limit the number of recommendations
+		</label>
+		<div class="slider-container" style="display: flex; align-items: center; gap: 10px;">
+			<label for="maxRecommendations">Max recommendations:</label>
+			<input type="range" id="maxRecommendations" min="0" max="180" step="18" value="180">
+			<span id="maxRecValue">180</span>
+		</div>
         <div class="save-container">
             <button id="save" type="submit">Save</button>
             <button id="exportBlacklist" type="button">Export Blacklist</button>
