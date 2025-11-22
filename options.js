@@ -1,3 +1,9 @@
+const DEBUG = true;
+
+function logDebug(...args) {
+  if (DEBUG) console.log(...args);
+}
+
 function debounce(fn, delay) {
   let timeoutId;
   return (...args) => {
@@ -5,6 +11,8 @@ function debounce(fn, delay) {
     timeoutId = setTimeout(() => fn(...args), delay);
   };
 }
+
+const DEFAULT_MAX_RECOMMENDATIONS = 90;
 
 function setTextareaHeight() {
   const textarea = document.getElementById('blacklist');
@@ -140,10 +148,22 @@ browser.storage.local.get(['blacklist', 'removeSameAuthor', 'thumbnailFixer', 'l
   document.getElementById('removeSameAuthor').checked = result.removeSameAuthor || false;
   document.getElementById('thumbnailFixer').checked = result.thumbnailFixer || false;
   limitCheckbox.checked = result.limitRecommendations !== undefined ? result.limitRecommendations : false;
-  maxRecSlider.value = result.maxRecommendations || 180;
+  maxRecSlider.value = result.maxRecommendations || DEFAULT_MAX_RECOMMENDATIONS;
   updateMaxRecValue(maxRecSlider.value);
   toggleSliderState(limitCheckbox.checked);
   setTextareaHeight();
   const validationResult = parseBlacklist(textarea.value);
   showErrorMessage(validationResult);
+});
+
+// Listen for storage changes to keep the options page in sync
+browser.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === 'local' && changes.blacklist) {
+    const newBlacklist = changes.blacklist.newValue || [];
+    textarea.value = newBlacklist.join('\n');
+    setTextareaHeight();
+    const validationResult = parseBlacklist(textarea.value);
+    showErrorMessage(validationResult);
+    logDebug('Options page: Blacklist updated from storage');
+  }
 });

@@ -4,6 +4,8 @@ function logDebug(...args) {
   if (DEBUG) console.log(...args);
 }
 
+const DEFAULT_MAX_RECOMMENDATIONS = 90;
+
 let settings = { blacklist: new Set(), removeSameAuthor: false };
 let removedCount = 0;
 let counterElement = null;
@@ -13,7 +15,7 @@ let currentAuthorId = null;
 let processedLiElements = new WeakSet();
 let thumbnailFixerEnabled = false;
 let limitRecommendations = false;
-let maxRecommendations = 180;
+let maxRecommendations = 90;
 
 function debounce(fn, delay) {
   let timeoutId;
@@ -31,7 +33,7 @@ async function loadSettings() {
     thumbnailFixerEnabled = result.thumbnailFixer || false;
 	
 	limitRecommendations = result.limitRecommendations || false;
-	maxRecommendations = result.maxRecommendations !== undefined ? result.maxRecommendations : 180;
+	maxRecommendations = result.maxRecommendations !== undefined ? result.maxRecommendations : DEFAULT_MAX_RECOMMENDATIONS;
 	
 	logDebug(`[loadSettings] limitRecommendations=${limitRecommendations}, maxRecommendations=${maxRecommendations}`);
     
