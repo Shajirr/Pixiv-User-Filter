@@ -143,59 +143,61 @@ function updateWebRequestListener() {
 browser.runtime.onInstalled.addListener(() => {
   logDebug('Pixiv User Filter: Setting up context menus');
   
-  // Remove only our specific menus to prevent duplicate ID errors
-  browser.contextMenus.remove('pixiv-blacklist', () => {});
-  browser.contextMenus.remove('add-to-blacklist', () => {});
-  browser.contextMenus.remove('remove-from-blacklist', () => {});
+  // Remove only our specific menus
+  const menuIds = ['pixiv-blacklist', 'add-to-blacklist', 'remove-from-blacklist'];
+  const removePromises = menuIds.map(id => 
+    browser.contextMenus.remove(id)
+      .then(() => logDebug(`Removed menu: ${id}`))
+      .catch(() => logDebug(`Menu ${id} doesn't exist`))
+  );
   
-  // Small delay to ensure removal completes first
-  setTimeout(() => {
-    browser.contextMenus.create({
-      id: "pixiv-blacklist",
-      title: "Pixiv User Filter",
-      contexts: ["link"],
-      documentUrlPatterns: ["*://*.pixiv.net/*"],
-      targetUrlPatterns: ["*://*.pixiv.net/*/users/*", "*://*.pixiv.net/users/*"]
-    }, () => {
-      if (browser.runtime.lastError) {
-        console.error("Error creating parent menu:", browser.runtime.lastError);
-      } else {
-        logDebug("Parent menu created successfully");
-      }
-    });
-
-    browser.contextMenus.create({
-      id: "add-to-blacklist",
-      parentId: "pixiv-blacklist",
-      title: "Add User to Blacklist",
-      contexts: ["link"],
-      documentUrlPatterns: ["*://*.pixiv.net/*"],
-      targetUrlPatterns: ["*://*.pixiv.net/*/users/*", "*://*.pixiv.net/users/*"]
-    }, () => {
-      if (browser.runtime.lastError) {
-        console.error("Error creating add-to-blacklist submenu:", browser.runtime.lastError);
-      } else {
-        logDebug("Add-to-blacklist submenu created successfully");
-      }
-    });
-
-    browser.contextMenus.create({
-      id: "remove-from-blacklist",
-      parentId: "pixiv-blacklist",
-      title: "Remove User from Blacklist",
-      contexts: ["link"],
-      documentUrlPatterns: ["*://*.pixiv.net/*"],
-      targetUrlPatterns: ["*://*.pixiv.net/*/users/*", "*://*.pixiv.net/users/*"]
-    }, () => {
-      if (browser.runtime.lastError) {
-        console.error("Error creating remove-from-blacklist submenu:", browser.runtime.lastError);
-      } else {
-        logDebug("Remove-from-blacklist submenu created successfully");
-        logDebug('Pixiv User Filter: Context menus created successfully');
-      }
-    });
+  // Wait for all removals, then create menus
+  Promise.all(removePromises).then(() => {
+    // Small delay to ensure removal completes
+    return new Promise(resolve => setTimeout(resolve, 100));
+  }).then(() => {
+  }).then(() => {
+    try {
+      // Create parent menu
+      return browser.contextMenus.create({
+        id: "pixiv-blacklist",
+        title: "Pixiv User Filter",
+        contexts: ["link"],
+        documentUrlPatterns: ["*://*.pixiv.net/*"],
+        targetUrlPatterns: ["*://*.pixiv.net/*/users/*", "*://*.pixiv.net/users/*"]
+      });
+    } catch (error) {
+      console.error("Error creating parent menu:", error);
+      throw error;
+    }
+  }).then(() => {
+    logDebug("Parent menu created successfully");
     
-  }, 150);
+    // Create submenus
+    return Promise.all([
+      browser.contextMenus.create({
+        id: "add-to-blacklist",
+        parentId: "pixiv-blacklist",
+        title: "Add User to Blacklist",
+        contexts: ["link"],
+        documentUrlPatterns: ["*://*.pixiv.net/*"],
+        targetUrlPatterns: ["*://*.pixiv.net/*/users/*", "*://*.pixiv.net/users/*"]
+      }),
+      browser.contextMenus.create({
+        id: "remove-from-blacklist",
+        parentId: "pixiv-blacklist",
+        title: "Remove User from Blacklist",
+        contexts: ["link"],
+        documentUrlPatterns: ["*://*.pixiv.net/*"],
+        targetUrlPatterns: ["*://*.pixiv.net/*/users/*", "*://*.pixiv.net/users/*"]
+      })
+    ]);
+  }).then(() => {
+    logDebug("All submenus created successfully");
+    logDebug('Pixiv User Filter: Context menus created successfully');
+  }).catch(error => {
+    console.error("Error creating context menus:", error);
+  });
 });
 
 browser.runtime.onMessage.addListener((message, sender) => {

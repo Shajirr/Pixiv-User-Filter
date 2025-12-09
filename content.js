@@ -49,12 +49,8 @@ async function loadSettings() {
 
 const selectors = {
   userLink: 'a[data-gtm-user-id], a[href*="/users/"]',
-  artworkHeader: 'div div h2, div div h3', // Target both h2 and h3 within nested divs
   tagOuterDiv: 'div', // Generic to catch any outer div
   tagHeader: 'h3', // Generic to catch any h3
-  tagInnerDiv: 'div', // Generic to catch any inner div
-  tagAnchor: 'div', // Generic to catch any anchor div
-  tagCount: 'div span', // Generic to catch count spans
   followButton: 'button[data-gtm-user-id]',
   profileLink: 'section a[data-gtm-value]',
   recommendZone: 'div.gtm-illust-recommend-zone' // Recommendation section
@@ -273,20 +269,19 @@ function createCounter(attempt = 1, maxAttempts = 3) {
           anchor.insertAdjacentElement('afterend', counterElement);
           logDebug(`[createCounter] Inserted counter after ${anchor.tagName.toLowerCase()}`);
 
-          // Observe a higher-level parent (e.g., <main> or <body>) for DOM changes
-          const parent = document.querySelector('main') || document.body;
-          if (parent) {
-            const observer = new MutationObserver((mutations) => {
-              if (!parent.querySelector('span.pixiv-recommendation-counter')) {
-                logDebug('[createCounter] Counter removed, scheduling recreation');
-                setTimeout(() => createCounter(1, maxAttempts), 1000);
-              } else {
-                logDebug('[createCounter] Counter still present');
+          // Observe only the anchor's parent
+          const observerTarget = anchor.parentNode;
+          if (observerTarget) {
+            const observer = new MutationObserver(() => {
+              // Only react if the counter is actually missing
+              if (!document.querySelector('span.pixiv-recommendation-counter')) {
+                logDebug('[createCounter] Counter actually removed, recreating...');
+                createCounter(1, maxAttempts);
               }
             });
-            observer.observe(parent, { childList: true, subtree: true });
+            observer.observe(observerTarget, { childList: true, subtree: true });
             recommendationObservers.push(observer);
-            logDebug('[createCounter] Set up observer on main/body for counter persistence');
+            logDebug('[createCounter] Set up targeted observer on anchor parent for counter persistence');
           }
           resolve(true);
         } else {
@@ -417,6 +412,7 @@ function waitForRecommendationGrid() {
       logDebug('[waitForRecommendationGrid] <ul> with artworks loaded → setting up observer');
       observer.disconnect();
       setupArtworkObserver();
+	  updateAllArtworks();
     }
   });
 
@@ -569,7 +565,8 @@ function updatePage() {
           if (isArtwork) {
             waitForRecommendationGrid(); // only wait on artwork pages
           } else {
-            setupArtworkObserver(); // tag pages - grids are already loaded
+			setupArtworkObserver(); // tag pages - grids are already loaded
+			updateAllArtworks(); // process immediately on tag pages
           }
           
           updateCounter();
