@@ -12,14 +12,17 @@ let webRequestListener = null; // store reference to the listener
 
 async function loadSettings() {
   try {
-    const result = await browser.storage.local.get(['limitRecommendations', 'maxRecommendations']);
+    const result = await browser.storage.local.get(["limitRecommendations", "maxRecommendations"]);
     settings.limitRecommendations = result.limitRecommendations || false;
-    settings.maxRecommendations = result.maxRecommendations !== undefined ? result.maxRecommendations : DEFAULT_MAX_RECOMMENDATIONS;
-    logDebug(`[background] Loaded settings: limitRecommendations=${settings.limitRecommendations}, maxRecommendations=${settings.maxRecommendations}`);
-	// Update listener based on settings
+    settings.maxRecommendations =
+      result.maxRecommendations !== undefined ? result.maxRecommendations : DEFAULT_MAX_RECOMMENDATIONS;
+    logDebug(
+      `[background] Loaded settings: limitRecommendations=${settings.limitRecommendations}, maxRecommendations=${settings.maxRecommendations}`,
+    );
+    // Update listener based on settings
     updateWebRequestListener();
   } catch (error) {
-    console.error('[background] Error loading settings:', error);
+    console.error("[background] Error loading settings:", error);
   }
 }
 
@@ -28,13 +31,13 @@ function showNotification(title, message) {
     type: "basic",
     title,
     message,
-    iconUrl: "icon.svg"
+    iconUrl: "icon.svg",
   });
 }
 
 async function updateBlacklist(userId, action, tabId) {
   try {
-    const { blacklist = [] } = await browser.storage.local.get('blacklist');
+    const { blacklist = [] } = await browser.storage.local.get("blacklist");
     const blacklistSet = new Set(blacklist);
     if (action === "add") {
       if (blacklistSet.has(userId)) {
@@ -64,53 +67,58 @@ async function updateBlacklist(userId, action, tabId) {
 }
 
 function createWebRequestListener() {
-  return async function(details) {
+  return async function (details) {
     logDebug(`[background] webRequest fired: ${details.url}, tabId=${details.tabId}`);
-    
+
     if (details.tabId < 0) {
       logDebug(`[background] Invalid tabId, allowing request, tabId=${details.tabId}`);
       return { cancel: false };
     }
-    
+
     if (!settings.limitRecommendations) {
-        logDebug(`[background] Limiting disabled, allowing request, limitRecommendations=${settings.limitRecommendations}`);
-        return { cancel: false };
+      logDebug(
+        `[background] Limiting disabled, allowing request, limitRecommendations=${settings.limitRecommendations}`,
+      );
+      return { cancel: false };
     }
-    
+
     // Check if the request is from an artwork page
     try {
       const tab = await browser.tabs.get(details.tabId);
       const tabUrl = tab.url;
       const isArtworkPage = /\/(?:en\/)?artworks\/\d+/.test(tabUrl);
-      
+
       if (!isArtworkPage) {
         logDebug(`[background] Request not from artwork page (${tabUrl}), allowing`);
         return { cancel: false };
       }
     } catch (error) {
-      console.error('[background] Error getting tab info:', error);
+      console.error("[background] Error getting tab info:", error);
       return { cancel: false };
     }
 
     const maxBatches = Math.floor(settings.maxRecommendations / 18);
     const url = details.url;
 
-	// Match initial recommendation requests
-    if (url.match(/\/ajax\/illust\/\d+\/recommend\/init\?limit=18/) || 
-    url.includes('/ajax/illust/discovery?mode=')){
+    // Match initial recommendation requests
+    if (url.match(/\/ajax\/illust\/\d+\/recommend\/init\?limit=18/) || url.includes("/ajax/illust/discovery?mode=")) {
       // Initial batch
       const shouldBlock = maxBatches <= 0;
-      logDebug(`[background] Initial discovery request: ${shouldBlock ? 'blocked' : 'allowed'} (maxBatches=${maxBatches})`);
+      logDebug(
+        `[background] Initial discovery request: ${shouldBlock ? "blocked" : "allowed"} (maxBatches=${maxBatches})`,
+      );
       return { cancel: shouldBlock };
-    } else if (url.includes('/ajax/illust/recommend/illusts?')) {
+    } else if (url.includes("/ajax/illust/recommend/illusts?")) {
       // Match subsequent batches
       let count = batchCounts.get(details.tabId) || 0;
-      const shouldBlock = count >= (maxBatches - 1);
+      const shouldBlock = count >= maxBatches - 1;
       if (!shouldBlock) {
         count++;
         batchCounts.set(details.tabId, count);
       }
-      logDebug(`[background] Recommend request: ${shouldBlock ? 'blocked' : 'allowed'} (count=${count}, maxBatches=${maxBatches})`);
+      logDebug(
+        `[background] Recommend request: ${shouldBlock ? "blocked" : "allowed"} (count=${count}, maxBatches=${maxBatches})`,
+      );
       return { cancel: shouldBlock };
     }
     return { cancel: false };
@@ -123,81 +131,64 @@ function updateWebRequestListener() {
     webRequestListener = createWebRequestListener();
     browser.webRequest.onBeforeRequest.addListener(
       webRequestListener,
-      { urls: [
-        "*://*.pixiv.net/ajax/illust/*/recommend/init*",
-        "*://*.pixiv.net/ajax/illust/discovery*",
-        "*://*.pixiv.net/ajax/illust/recommend/illusts*"
-      ]},
-      ["blocking"]
+      {
+        urls: [
+          "*://*.pixiv.net/ajax/illust/*/recommend/init*",
+          "*://*.pixiv.net/ajax/illust/discovery*",
+          "*://*.pixiv.net/ajax/illust/recommend/illusts*",
+        ],
+      },
+      ["blocking"],
     );
-    logDebug('[background] Added webRequest listener');
+    logDebug("[background] Added webRequest listener");
   } else if (!settings.limitRecommendations && webRequestListener) {
     // Remove listener if not needed and present
     browser.webRequest.onBeforeRequest.removeListener(webRequestListener);
     webRequestListener = null;
-    logDebug('[background] Removed webRequest listener');
+    logDebug("[background] Removed webRequest listener");
   }
 }
 
 // Initialize context menus
-browser.runtime.onInstalled.addListener(() => {
-  logDebug('Pixiv User Filter: Setting up context menus');
-  
-  // Remove only our specific menus
-  const menuIds = ['pixiv-blacklist', 'add-to-blacklist', 'remove-from-blacklist'];
-  const removePromises = menuIds.map(id => 
-    browser.contextMenus.remove(id)
-      .then(() => logDebug(`Removed menu: ${id}`))
-      .catch(() => logDebug(`Menu ${id} doesn't exist`))
-  );
-  
-  // Wait for all removals, then create menus
-  Promise.all(removePromises).then(() => {
-    // Small delay to ensure removal completes
-    return new Promise(resolve => setTimeout(resolve, 100));
-  }).then(() => {
-  }).then(() => {
-    try {
-      // Create parent menu
-      return browser.contextMenus.create({
-        id: "pixiv-blacklist",
-        title: "Pixiv User Filter",
-        contexts: ["link"],
-        documentUrlPatterns: ["*://*.pixiv.net/*"],
-        targetUrlPatterns: ["*://*.pixiv.net/*/users/*", "*://*.pixiv.net/users/*"]
-      });
-    } catch (error) {
-      console.error("Error creating parent menu:", error);
-      throw error;
-    }
-  }).then(() => {
-    logDebug("Parent menu created successfully");
-    
+browser.runtime.onInstalled.addListener(async () => {
+  logDebug("Pixiv User Filter: Setting up context menus");
+
+  try {
+    await browser.contextMenus.removeAll();
+
+    const targetPatterns = ["*://*.pixiv.net/*/users/*", "*://*.pixiv.net/users/*"];
+
+    // Create parent menu
+    await browser.contextMenus.create({
+      id: "pixiv-blacklist",
+      title: "Pixiv User Filter",
+      contexts: ["link", "image"],
+      documentUrlPatterns: ["*://*.pixiv.net/*"],
+      targetUrlPatterns: targetPatterns,
+    });
+
     // Create submenus
-    return Promise.all([
+    await Promise.all([
       browser.contextMenus.create({
         id: "add-to-blacklist",
         parentId: "pixiv-blacklist",
         title: "Add User to Blacklist",
-        contexts: ["link"],
-        documentUrlPatterns: ["*://*.pixiv.net/*"],
-        targetUrlPatterns: ["*://*.pixiv.net/*/users/*", "*://*.pixiv.net/users/*"]
+        contexts: ["link", "image"],
+        targetUrlPatterns: targetPatterns,
       }),
       browser.contextMenus.create({
         id: "remove-from-blacklist",
         parentId: "pixiv-blacklist",
         title: "Remove User from Blacklist",
-        contexts: ["link"],
-        documentUrlPatterns: ["*://*.pixiv.net/*"],
-        targetUrlPatterns: ["*://*.pixiv.net/*/users/*", "*://*.pixiv.net/users/*"]
-      })
+        contexts: ["link", "image"],
+        targetUrlPatterns: targetPatterns,
+      }),
     ]);
-  }).then(() => {
-    logDebug("All submenus created successfully");
-    logDebug('Pixiv User Filter: Context menus created successfully');
-  }).catch(error => {
-    console.error("Error creating context menus:", error);
-  });
+
+    logDebug("Pixiv User Filter: Context menus created successfully");
+  } catch (error) {
+    console.error("Pixiv User Filter: Critical error setting up context menus:", error);
+  }
 });
 
 browser.runtime.onMessage.addListener((message, sender) => {

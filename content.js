@@ -12,7 +12,7 @@ let counterElement = null;
 let recommendationObservers = [];
 let lastPathname = window.location.pathname;
 let currentAuthorId = null;
-let processedLiElements = new WeakSet();
+let processedLiElements = new WeakMap();
 let thumbnailFixerEnabled = false;
 let limitRecommendations = false;
 let maxRecommendations = 90;
@@ -27,33 +27,41 @@ function debounce(fn, delay) {
 
 async function loadSettings() {
   try {
-	const result = await browser.storage.local.get(['blacklist', 'removeSameAuthor', 'thumbnailFixer', 'limitRecommendations', 'maxRecommendations']);
+    const result = await browser.storage.local.get([
+      "blacklist",
+      "removeSameAuthor",
+      "thumbnailFixer",
+      "limitRecommendations",
+      "maxRecommendations",
+    ]);
     settings.blacklist = new Set(result.blacklist || []);
     settings.removeSameAuthor = result.removeSameAuthor || false;
     thumbnailFixerEnabled = result.thumbnailFixer || false;
-	
-	limitRecommendations = result.limitRecommendations || false;
-	maxRecommendations = result.maxRecommendations !== undefined ? result.maxRecommendations : DEFAULT_MAX_RECOMMENDATIONS;
-	
-	logDebug(`[loadSettings] limitRecommendations=${limitRecommendations}, maxRecommendations=${maxRecommendations}`);
-    
-    logDebug(`[loadSettings] Loaded settings: blacklist=${[...settings.blacklist].join(', ')}, removeSameAuthor=${settings.removeSameAuthor}, thumbnailFixer=${thumbnailFixerEnabled}`);
-        
+
+    limitRecommendations = result.limitRecommendations || false;
+    maxRecommendations =
+      result.maxRecommendations !== undefined ? result.maxRecommendations : DEFAULT_MAX_RECOMMENDATIONS;
+
+    logDebug(`[loadSettings] limitRecommendations=${limitRecommendations}, maxRecommendations=${maxRecommendations}`);
+
+    logDebug(
+      `[loadSettings] Loaded settings: blacklist=${[...settings.blacklist].join(", ")}, removeSameAuthor=${settings.removeSameAuthor}, thumbnailFixer=${thumbnailFixerEnabled}`,
+    );
+
     // Update thumbnail fixer after loading settings
     ThumbnailFixer.setEnabled(thumbnailFixerEnabled);
-    
   } catch (error) {
-    console.error('[loadSettings] Error:', error);
+    console.error("[loadSettings] Error:", error);
   }
 }
 
 const selectors = {
   userLink: 'a[data-gtm-user-id], a[href*="/users/"]',
-  tagOuterDiv: 'div', // Generic to catch any outer div
-  tagHeader: 'h3', // Generic to catch any h3
-  followButton: 'button[data-gtm-user-id]',
-  profileLink: 'section a[data-gtm-value]',
-  recommendZone: 'div.gtm-illust-recommend-zone' // Recommendation section
+  tagOuterDiv: "div", // Generic to catch any outer div
+  tagHeader: "h3", // Generic to catch any h3
+  followButton: "button[data-gtm-user-id]",
+  profileLink: "section a[data-gtm-value]",
+  recommendZone: "div.gtm-illust-recommend-zone", // Recommendation section
 };
 
 function updateCounter() {
@@ -62,39 +70,39 @@ function updateCounter() {
       counterElement.textContent = `Removed: ${removedCount}`;
       logDebug(`[updateCounter] Updated counter to display: Removed: ${removedCount}`);
     } else {
-      logDebug('[updateCounter] Counter element not found, cannot update counter');
+      logDebug("[updateCounter] Counter element not found, cannot update counter");
     }
-    if (document.visibilityState === 'visible') {
+    if (document.visibilityState === "visible") {
       browser.runtime.sendMessage({ action: "setBadge", count: removedCount });
       logDebug(`[updateCounter] Updated badge with count: ${removedCount} (tab is visible)`);
     } else {
       logDebug(`[updateCounter] Skipped badge update (tab is not visible)`);
     }
   } catch (error) {
-    console.error('[updateCounter] Error:', error);
+    console.error("[updateCounter] Error:", error);
   }
 }
 
 function findArtworkGridsByContent() {
-    const allULs = document.querySelectorAll('ul');
-    const candidates = [];
-    
-    for (const ul of allULs) {
-      const artworkLinks = ul.querySelectorAll('a[href*="/artworks/"]');
-      const hasImages = ul.querySelector('li img');
-      // Must have at least 1 artwork link and contain images
-      if (artworkLinks.length > 0 && hasImages) {
-        candidates.push(ul);
-        logDebug(`[findArtworkGridsByContent] Candidate grid with ${artworkLinks.length} artworks`, ul);
-      }
+  const allULs = document.querySelectorAll("ul");
+  const candidates = [];
+
+  for (const ul of allULs) {
+    const artworkLinks = ul.querySelectorAll('a[href*="/artworks/"]');
+    const hasImages = ul.querySelector("li img");
+    // Must have at least 1 artwork link and contain images
+    if (artworkLinks.length > 0 && hasImages) {
+      candidates.push(ul);
+      logDebug(`[findArtworkGridsByContent] Candidate grid with ${artworkLinks.length} artworks`, ul);
     }
+  }
   logDebug(`[findArtworkGridsByContent] Found ${candidates.length} valid grid(s)`);
   return candidates;
 }
 
 function getArtworkGridContainers() {
   const isArtworkPage = /\/(?:en\/)?artworks\/\d+$/.test(window.location.pathname);
-  logDebug(`[getArtworkGridContainers] Detecting grids on ${isArtworkPage ? 'artwork' : 'tag'} page`);
+  logDebug(`[getArtworkGridContainers] Detecting grids on ${isArtworkPage ? "artwork" : "tag"} page`);
 
   let grids = [];
 
@@ -102,16 +110,16 @@ function getArtworkGridContainers() {
     // First use stable GTM class
     const gtmContainer = document.querySelector(selectors.recommendZone);
     if (gtmContainer) {
-      const ul = gtmContainer.querySelector('ul');
+      const ul = gtmContainer.querySelector("ul");
       if (ul && ul.querySelector('li a[href*="/artworks/"]')) {
         grids.push(ul);
-        logDebug('[getArtworkGridContainers] Found grid via gtm-illust-recommend-zone');
+        logDebug("[getArtworkGridContainers] Found grid via gtm-illust-recommend-zone");
       }
     }
 
     // Fallback - content-based search
     if (grids.length === 0) {
-      logDebug('[getArtworkGridContainers] Falling back to content-based detection');
+      logDebug("[getArtworkGridContainers] Falling back to content-based detection");
       grids = findArtworkGridsByContent();
     }
   } else {
@@ -127,44 +135,46 @@ function getArtworkGridContainers() {
 
 function updateAllArtworks(attempt = 1, maxAttempts = 3) {
   try {
-    logDebug('[updateAllArtworks] Starting artwork update');
+    logDebug("[updateAllArtworks] Starting artwork update");
     const containers = getArtworkGridContainers();
     let totalProcessed = 0;
     let totalBlocked = 0;
     let newlyProcessed = 0;
-    
+
     // Collect elements for batch DOM style changes
     const elementsToHide = [];
     const elementsToShow = [];
-    containers.forEach(container => {
-      const lis = container.querySelectorAll('li');
+    containers.forEach((container) => {
+      const lis = container.querySelectorAll("li");
       totalProcessed += lis.length;
-      lis.forEach(li => {
+      lis.forEach((li) => {
         const result = processLi(li, settings.blacklist, currentAuthorId, settings.removeSameAuthor);
         const { shouldBlock, alreadyProcessed } = result;
         if (shouldBlock) {
           totalBlocked++;
-		  // Only add to batch if current display doesn't match desired state
-          if (li.style.display !== 'none') {
+          // Only add to batch if current display doesn't match desired state
+          if (li.style.display !== "none") {
             elementsToHide.push(li);
           }
         } else {
           // Only add to batch if current display doesn't match desired state
-          if (li.style.display === 'none') {
+          if (li.style.display === "none") {
             elementsToShow.push(li);
           }
         }
-        
+
         if (!alreadyProcessed) newlyProcessed++;
       });
     });
-    
+
     // Apply DOM changes in batches using requestAnimationFrame
     if (elementsToHide.length > 0 || elementsToShow.length > 0) {
       requestAnimationFrame(() => {
-        logDebug(`[updateAllArtworks] Batching style changes: hiding ${elementsToHide.length}, unhiding ${elementsToShow.length}`);
-        elementsToHide.forEach(el => el.style.display = 'none');
-        elementsToShow.forEach(el => el.style.display = '');
+        logDebug(
+          `[updateAllArtworks] Batching style changes: hiding ${elementsToHide.length}, unhiding ${elementsToShow.length}`,
+        );
+        elementsToHide.forEach((el) => (el.style.display = "none"));
+        elementsToShow.forEach((el) => (el.style.display = ""));
       });
     }
     if (totalProcessed === 0 && attempt < maxAttempts) {
@@ -172,71 +182,75 @@ function updateAllArtworks(attempt = 1, maxAttempts = 3) {
       setTimeout(() => updateAllArtworks(attempt + 1, maxAttempts), 1000);
       return;
     }
-    
+
     removedCount = totalBlocked;
-    logDebug(`[updateAllArtworks] Processed ${totalProcessed} items (${newlyProcessed} new), blocked ${totalBlocked} total`);
+    logDebug(
+      `[updateAllArtworks] Processed ${totalProcessed} items (${newlyProcessed} new), blocked ${totalBlocked} total`,
+    );
     updateCounter();
   } catch (error) {
-    console.error('[updateAllArtworks] Error:', error);
+    console.error("[updateAllArtworks] Error:", error);
   }
 }
 
 function findRecommendationHeader() {
   const recommendZone = document.querySelector(selectors.recommendZone);
-  
-  logDebug`[findRecommendationHeader] recommendZone: ${recommendZone ? 'found' : 'not found'}`;
-  
+
+  logDebug`[findRecommendationHeader] recommendZone: ${recommendZone ? "found" : "not found"}`;
+
   if (recommendZone) {
     const headerContainer = recommendZone.previousElementSibling;
-    logDebug`[findRecommendationHeader] headerContainer: ${headerContainer ? 'found' : 'not found'}`;
-    
+    logDebug`[findRecommendationHeader] headerContainer: ${headerContainer ? "found" : "not found"}`;
+
     if (headerContainer) {
-      const h2 = headerContainer.querySelector('h2');
-      logDebug`[findRecommendationHeader] h2: ${h2 ? 'found' : 'not found'}`;
+      const h2 = headerContainer.querySelector("h2");
+      logDebug`[findRecommendationHeader] h2: ${h2 ? "found" : "not found"}`;
       return h2;
     }
   }
-  logDebug('[findRecommendationHeader] No header found');
+  logDebug("[findRecommendationHeader] No header found");
   return null;
 }
 
 function createCounter(attempt = 1, maxAttempts = 3) {
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     const delay = attempt === 1 ? 1500 : 2000;
-    logDebug(`[createCounter] Scheduling attempt ${attempt}/${maxAttempts} in ${delay}ms at ${new Date().toISOString()}`);
+    logDebug(
+      `[createCounter] Scheduling attempt ${attempt}/${maxAttempts} in ${delay}ms at ${new Date().toISOString()}`,
+    );
     setTimeout(() => {
       logDebug(`[createCounter] Attempt ${attempt}/${maxAttempts} started at ${new Date().toISOString()}`);
       try {
         // Remove existing counters
-        const existingCounters = document.querySelectorAll('span.pixiv-recommendation-counter');
-        existingCounters.forEach(counter => counter.remove());
+        const existingCounters = document.querySelectorAll("span.pixiv-recommendation-counter");
+        existingCounters.forEach((counter) => counter.remove());
 
         const isArtwork = /\/(?:en\/)?artworks\/\d+$/.test(window.location.pathname);
-        
-        logDebug(`[createCounter] Page type: ${isArtwork ? 'Artwork' : 'Tag'} (URL: ${window.location.pathname})`);
-        
+
+        logDebug(`[createCounter] Page type: ${isArtwork ? "Artwork" : "Tag"} (URL: ${window.location.pathname})`);
+
         let anchor = null;
-        
+
         if (isArtwork) {
-          anchor = findRecommendationHeader();  
-          logDebug(`[createCounter] Artwork page: anchor ${anchor ? 'found' : 'not found'}`);
+          anchor = findRecommendationHeader();
+          logDebug(`[createCounter] Artwork page: anchor ${anchor ? "found" : "not found"}`);
         } else {
           // check if it's an english tag page (has /en/ prefix)
           const isEnglishTagPage = /\/en\/tags\//.test(window.location.pathname);
-            
+
           // if not in english, don't create the counter
           if (!isEnglishTagPage) {
-            logDebug('[createCounter] Non-English tag page detected, skipping counter creation');
+            logDebug("[createCounter] Non-English tag page detected, skipping counter creation");
             resolve(true);
             return;
           }
-            
+
           const outerDivs = document.querySelectorAll(selectors.tagOuterDiv);
           for (const outerDiv of outerDivs) {
             const h3 = outerDiv.querySelector(selectors.tagHeader);
             if (h3) {
               const h3Text = h3.textContent.trim();
-              if (h3Text.includes('Works') || h3Text.includes('Illustrations') || h3Text.includes('Manga')) {
+              if (h3Text.includes("Works") || h3Text.includes("Illustrations") || h3Text.includes("Manga")) {
                 anchor = h3;
                 logDebug(`[createCounter] Tag page: Selected h3 with text "${h3Text}" as anchor`);
                 break;
@@ -247,10 +261,10 @@ function createCounter(attempt = 1, maxAttempts = 3) {
 
         if (!anchor) {
           // Fallback: try finding any h3 with "Works" or "Illustrations"
-          const headers = document.querySelectorAll('h3');
+          const headers = document.querySelectorAll("h3");
           for (const header of headers) {
             const text = header.textContent.trim();
-            if (text.includes('Works') || text.includes('Illustrations') || text.includes('Manga')) {
+            if (text.includes("Works") || text.includes("Illustrations") || text.includes("Manga")) {
               anchor = header;
               logDebug(`[createCounter] Fallback: Found h3 with text "${text}"`);
               break;
@@ -258,15 +272,15 @@ function createCounter(attempt = 1, maxAttempts = 3) {
           }
         }
         if (anchor) {
-          counterElement = document.createElement('span');
-          counterElement.className = 'pixiv-recommendation-counter';
-          counterElement.style.marginLeft = '10px';
-          counterElement.style.fontSize = '14px';
-          counterElement.style.color = '#555';
-          counterElement.style.display = 'inline-block';
-          counterElement.style.verticalAlign = 'middle';
+          counterElement = document.createElement("span");
+          counterElement.className = "pixiv-recommendation-counter";
+          counterElement.style.marginLeft = "10px";
+          counterElement.style.fontSize = "14px";
+          counterElement.style.color = "#555";
+          counterElement.style.display = "inline-block";
+          counterElement.style.verticalAlign = "middle";
           counterElement.textContent = `Removed: ${removedCount}`;
-          anchor.insertAdjacentElement('afterend', counterElement);
+          anchor.insertAdjacentElement("afterend", counterElement);
           logDebug(`[createCounter] Inserted counter after ${anchor.tagName.toLowerCase()}`);
 
           // Observe only the anchor's parent
@@ -274,14 +288,14 @@ function createCounter(attempt = 1, maxAttempts = 3) {
           if (observerTarget) {
             const observer = new MutationObserver(() => {
               // Only react if the counter is actually missing
-              if (!document.querySelector('span.pixiv-recommendation-counter')) {
-                logDebug('[createCounter] Counter actually removed, recreating...');
+              if (!document.querySelector("span.pixiv-recommendation-counter")) {
+                logDebug("[createCounter] Counter actually removed, recreating...");
                 createCounter(1, maxAttempts);
               }
             });
             observer.observe(observerTarget, { childList: true, subtree: true });
             recommendationObservers.push(observer);
-            logDebug('[createCounter] Set up targeted observer on anchor parent for counter persistence');
+            logDebug("[createCounter] Set up targeted observer on anchor parent for counter persistence");
           }
           resolve(true);
         } else {
@@ -306,23 +320,26 @@ function getPageAuthorId(attempt = 1, maxAttempts = 5) {
   try {
     const followButton = document.querySelector(selectors.followButton);
     if (followButton) {
-      const id = followButton.getAttribute('data-gtm-user-id');
+      const id = followButton.getAttribute("data-gtm-user-id");
       logDebug(`[getPageAuthorId] Author ID found from button: ${id}`);
       return Promise.resolve(id);
     }
     const link = document.querySelector(selectors.profileLink);
     if (link) {
-      const id = link.getAttribute('data-gtm-value');
+      const id = link.getAttribute("data-gtm-value");
       logDebug(`[getPageAuthorId] Author ID found from link: ${id}`);
       return Promise.resolve(id);
     }
-    logDebug('[getPageAuthorId] Author ID not found');
+    logDebug("[getPageAuthorId] Author ID not found");
     if (attempt < maxAttempts) {
       logDebug(`[getPageAuthorId] Retrying in 1000ms...`);
-      return new Promise(resolve => {
-        setTimeout(() => {
-          resolve(getPageAuthorId(attempt + 1, maxAttempts));
-        }, attempt === 1 ? 1500 : 1000);
+      return new Promise((resolve) => {
+        setTimeout(
+          () => {
+            resolve(getPageAuthorId(attempt + 1, maxAttempts));
+          },
+          attempt === 1 ? 1500 : 1000,
+        );
       });
     }
     logDebug(`[getPageAuthorId] Max attempts reached, no author ID found`);
@@ -336,10 +353,10 @@ function getPageAuthorId(attempt = 1, maxAttempts = 5) {
 function processLi(li, blacklist, authorId, removeSameAuthor) {
   // Skip if already processed
   if (processedLiElements.has(li)) {
-    return { 
-      userId: null, 
-      shouldBlock: li.style.display === 'none',
-      alreadyProcessed: true 
+    return {
+      userId: null,
+      shouldBlock: processedLiElements.get(li), // Return the stored result
+      alreadyProcessed: true,
     };
   }
 
@@ -348,11 +365,11 @@ function processLi(li, blacklist, authorId, removeSameAuthor) {
   try {
     const userLink = li.querySelector(selectors.userLink);
     if (!userLink) {
-      processedLiElements.add(li);
+      processedLiElements.set(li, false); // Store verdict
       return { userId: null, shouldBlock: false, alreadyProcessed: false };
     }
 
-    userId = userLink.getAttribute('data-gtm-user-id');
+    userId = userLink.getAttribute("data-gtm-user-id");
     if (!userId) {
       const match = userLink.href.match(/pixiv\.net\/(?:en\/)?users\/(\d+)/i);
       userId = match ? match[1] : null;
@@ -360,8 +377,8 @@ function processLi(li, blacklist, authorId, removeSameAuthor) {
 
     // Early return if no userId found
     if (!userId) {
-      processedLiElements.add(li);
-	  console.error('[processLi] Error: no userId found for ', li);
+      processedLiElements.set(li, false);
+      console.error("[processLi] Error: no userId found for ", li);
       return { userId: null, shouldBlock: false, alreadyProcessed: false };
     }
 
@@ -372,33 +389,35 @@ function processLi(li, blacklist, authorId, removeSameAuthor) {
       shouldBlock = true;
     }
 
-    // Mark as processed
-    processedLiElements.add(li);
+    // Store the verdict in the Map
+    processedLiElements.set(li, shouldBlock);
   } catch (error) {
-    console.error('[processLi] Error:', error);
-    processedLiElements.add(li); // Mark as processed even on error
+    console.error("[processLi] Error:", error);
+    processedLiElements.set(li, false); // Mark as processed even on error
   }
   return { userId, shouldBlock, alreadyProcessed: false };
 }
 
 function processArtworks(blacklist, authorId, removeSameAuthor) {
   try {
-    logDebug('[processArtworks] Starting artwork processing');
+    logDebug("[processArtworks] Starting artwork processing");
     logDebug(`[processArtworks] Blacklist contains ${blacklist.size} user IDs`);
     logDebug(`[processArtworks] Author ID: ${authorId}, removeSameAuthor: ${removeSameAuthor}`);
-    
+
     settings.blacklist = blacklist;
     currentAuthorId = authorId;
     settings.removeSameAuthor = removeSameAuthor;
     updateAllArtworks();
   } catch (error) {
-    console.error('[processArtworks] Error:', error);
+    console.error("[processArtworks] Error:", error);
   }
 }
 
 function isFilterablePage() {
   const regex = /\/(?:en\/)?(artworks\/\d+|tags\/.*)$/;
-  logDebug(`[isFilterablePage] Checking URL ${window.location.pathname}: ${regex.test(window.location.pathname) ? 'filterable' : 'non-filterable'}`);
+  logDebug(
+    `[isFilterablePage] Checking URL ${window.location.pathname}: ${regex.test(window.location.pathname) ? "filterable" : "non-filterable"}`,
+  );
   return regex.test(window.location.pathname);
 }
 
@@ -407,55 +426,58 @@ function waitForRecommendationGrid() {
     const zone = document.querySelector(selectors.recommendZone);
     if (!zone) return;
 
-    const ul = zone.querySelector('ul');
+    const ul = zone.querySelector("ul");
     if (ul && ul.querySelector('li a[href*="/artworks/"]')) {
-      logDebug('[waitForRecommendationGrid] <ul> with artworks loaded → setting up observer');
+      logDebug("[waitForRecommendationGrid] <ul> with artworks loaded → setting up observer");
       observer.disconnect();
       setupArtworkObserver();
-	  updateAllArtworks();
+      updateAllArtworks();
     }
   });
 
   observer.observe(document.body, { childList: true, subtree: true });
-  logDebug('[waitForRecommendationGrid] Watching for recommendation grid on artwork page');
+  logDebug("[waitForRecommendationGrid] Watching for recommendation grid on artwork page");
 }
-
 
 function setupArtworkObserver() {
   try {
-    recommendationObservers.forEach(observer => observer.disconnect());
+    recommendationObservers.forEach((observer) => observer.disconnect());
     recommendationObservers = [];
-    logDebug('[setupArtworkObserver] Cleared previous observers');
+    logDebug("[setupArtworkObserver] Cleared previous observers");
 
     const containers = getArtworkGridContainers();
     logDebug(`[setupArtworkObserver] Setting up observers for ${containers.length} grid containers`);
-    
+
     // More targeted debounced function for new items only
     let isProcessing = false;
     const debouncedProcessNewItems = debounce(() => {
       if (isProcessing) {
-        logDebug('[setupArtworkObserver] Already processing, skipping');
+        logDebug("[setupArtworkObserver] Already processing, skipping");
         return;
       }
       isProcessing = true;
-      logDebug('[setupArtworkObserver] Processing potentially new items');
+      logDebug("[setupArtworkObserver] Processing potentially new items");
       updateAllArtworks();
       // Reset flag after a short delay
-      setTimeout(() => { isProcessing = false; }, 100);
+      setTimeout(() => {
+        isProcessing = false;
+      }, 100);
     }, 300);
-    
+
     containers.forEach((container, index) => {
-      logDebug(`[setupArtworkObserver] Setting up observer for container[${index}]: ${container.outerHTML.substring(0, 200)}...`);
-      const observer = new MutationObserver(mutations => {
+      logDebug(
+        `[setupArtworkObserver] Setting up observer for container[${index}]: ${container.outerHTML.substring(0, 200)}...`,
+      );
+      const observer = new MutationObserver((mutations) => {
         // Only trigger if new li elements were actually added
         let hasNewLiElements = false;
-        
+
         // More efficient mutation checking
         for (const mutation of mutations) {
-          if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+          if (mutation.type === "childList" && mutation.addedNodes.length > 0) {
             for (const node of mutation.addedNodes) {
               if (node.nodeType === Node.ELEMENT_NODE) {
-                if (node.tagName === 'LI' || node.querySelector?.('li')) {
+                if (node.tagName === "LI" || node.querySelector?.("li")) {
                   hasNewLiElements = true;
                   break;
                 }
@@ -464,9 +486,9 @@ function setupArtworkObserver() {
             if (hasNewLiElements) break;
           }
         }
-        
+
         if (hasNewLiElements) {
-          logDebug('[setupArtworkObserver] New li elements detected, processing');
+          logDebug("[setupArtworkObserver] New li elements detected, processing");
           debouncedProcessNewItems();
         }
       });
@@ -474,202 +496,201 @@ function setupArtworkObserver() {
       recommendationObservers.push(observer);
     });
   } catch (error) {
-    console.error('[setupArtworkObserver] Error:', error);
+    console.error("[setupArtworkObserver] Error:", error);
   }
 }
 
 function refreshArtworks() {
   try {
-    logDebug('[refreshArtworks] Refreshing artworks');
+    logDebug("[refreshArtworks] Refreshing artworks");
 
     if (isFilterablePage()) {
       // Clear processed elements cache when blacklist changes
-      processedLiElements = new WeakSet();
-      logDebug('[refreshArtworks] Cleared processed elements cache');
+      processedLiElements = new WeakMap();
+      logDebug("[refreshArtworks] Cleared processed elements cache");
       removedCount = 0; // Reset for all pages during blacklist update
-      logDebug('[refreshArtworks] Reset removedCount to 0 for blacklist update');
+      logDebug("[refreshArtworks] Reset removedCount to 0 for blacklist update");
 
-      recommendationObservers.forEach(observer => observer.disconnect());
+      recommendationObservers.forEach((observer) => observer.disconnect());
       recommendationObservers = [];
-      logDebug('[refreshArtworks] Disconnected previous recommendation observers for blacklist update');
-      
+      logDebug("[refreshArtworks] Disconnected previous recommendation observers for blacklist update");
+
       // Process artworks immediately without waiting for counter
       processArtworks(settings.blacklist, currentAuthorId, settings.removeSameAuthor);
-      
+
       setupArtworkObserver();
-      
+
       // Create/update counter only if needed (async, non-blocking)
       if (!counterElement) {
-        createCounter().then(success => {
+        createCounter().then((success) => {
           if (!success) {
-            logDebug('[refreshArtworks] Proceeding with artwork processing despite counter creation failure');
+            logDebug("[refreshArtworks] Proceeding with artwork processing despite counter creation failure");
           }
         });
-      } 
-      
+      }
+
       // Create counter only if needed (async, non-blocking)
       if (!counterElement) {
         // Skip counter creation only for non-English tag pages
-        const isNonEnglishTagPage = /\/tags\//.test(window.location.pathname) && !/\/en\/tags\//.test(window.location.pathname);
+        const isNonEnglishTagPage =
+          /\/tags\//.test(window.location.pathname) && !/\/en\/tags\//.test(window.location.pathname);
         if (!isNonEnglishTagPage) {
           createCounter();
         } else {
-          logDebug('[refreshArtworks] non-English tag page, skip inline counter creation');  
+          logDebug("[refreshArtworks] non-English tag page, skip inline counter creation");
         }
       }
     }
   } catch (error) {
-    console.error('[refreshArtworks] Error:', error);
+    console.error("[refreshArtworks] Error:", error);
   }
 }
 
 function updatePage() {
   try {
-    logDebug('[updatePage] Updating page for URL:', window.location.pathname);
-	
-	
-    
-    // Clear processed elements cache on page change
-    processedLiElements = new WeakSet();
-    logDebug('[updatePage] Cleared processed elements cache for new page');
-    
-    recommendationObservers.forEach(observer => observer.disconnect());
+    logDebug("[updatePage] Updating page for URL:", window.location.pathname);
+
+    // Reset processed elements verdicts on page change
+    processedLiElements = new WeakMap();
+    logDebug("[updatePage] Cleared processed elements cache for new page");
+
+    recommendationObservers.forEach((observer) => observer.disconnect());
     recommendationObservers = [];
-    logDebug('[updatePage] Disconnected previous recommendation observers');
-    
+    logDebug("[updatePage] Disconnected previous recommendation observers");
+
     if (counterElement) {
       counterElement.remove();
       counterElement = null;
-      logDebug('[updatePage] Removed previous counter element');
+      logDebug("[updatePage] Removed previous counter element");
     }
-    
+
     if (isFilterablePage()) {
-      logDebug('[updatePage] Filterable page detected, processing');
+      logDebug("[updatePage] Filterable page detected, processing");
       logDebug(`[updatePage] Remove same author toggle: ${settings.removeSameAuthor}`);
-      
+
       const isArtwork = /\/(?:en\/)?artworks\/\d+$/.test(window.location.pathname);
       const authorPromise = isArtwork ? getPageAuthorId() : Promise.resolve(null);
-      
-	  if (isArtwork) {
-		browser.runtime.sendMessage({ action: "resetBatchCount" });
-		logDebug('[updatePage] Sent resetBatchCount message for artwork page');
-	  }
-	  
-      authorPromise.then(authorId => {
-        currentAuthorId = authorId;
-        logDebug(`[updatePage] Final author ID: ${authorId}`);
-        removedCount = 0;
-        createCounter().then(() => {
-          processArtworks(settings.blacklist, currentAuthorId, settings.removeSameAuthor && isArtwork);
-          
-          if (isArtwork) {
-            waitForRecommendationGrid(); // only wait on artwork pages
-          } else {
-			setupArtworkObserver(); // tag pages - grids are already loaded
-			updateAllArtworks(); // process immediately on tag pages
-          }
-          
-          updateCounter();
+
+      if (isArtwork) {
+        browser.runtime.sendMessage({ action: "resetBatchCount" });
+        logDebug("[updatePage] Sent resetBatchCount message for artwork page");
+      }
+
+      authorPromise
+        .then((authorId) => {
+          currentAuthorId = authorId;
+          logDebug(`[updatePage] Final author ID: ${authorId}`);
+          removedCount = 0;
+
+          createCounter().then(() => {
+            processArtworks(settings.blacklist, currentAuthorId, settings.removeSameAuthor && isArtwork);
+
+            if (isArtwork) {
+              waitForRecommendationGrid(); // only wait on artwork pages
+            } else {
+              setupArtworkObserver(); // tag pages - grids are already loaded
+            }
+          });
+        })
+        .catch((error) => {
+          console.error("[updatePage] Error resolving getPageAuthorId:", error);
         });
-      }).catch(error => {
-        console.error('[updatePage] Error resolving getPageAuthorId:', error);
-      });
     } else {
-      logDebug('[updatePage] Non-filterable page, skipping recommendation processing');
+      logDebug("[updatePage] Non-filterable page, skipping recommendation processing");
       removedCount = 0;
       currentAuthorId = null;
-      if (document.visibilityState === 'visible') {
+      if (document.visibilityState === "visible") {
         browser.runtime.sendMessage({ action: "setBadge", count: 0 });
-        logDebug('[updatePage] Non-filterable page, reset badge to 0 (tab is visible)');
+        logDebug("[updatePage] Non-filterable page, reset badge to 0 (tab is visible)");
       }
     }
   } catch (error) {
-    console.error('[updatePage] Error:', error);
+    console.error("[updatePage] Error:", error);
   }
 }
 
 async function main() {
   try {
-    logDebug('[main] main function started');
+    logDebug("[main] main function started");
     await loadSettings();
 
     // Initialize thumbnail fixer for all Pixiv pages
     ThumbnailFixer.init(thumbnailFixerEnabled);
-    
+
     // Process user filtering only on filterable pages
     if (isFilterablePage()) {
       updatePage();
     } else {
-      logDebug('[main] Non-filterable page, skipping user filtering');
+      logDebug("[main] Non-filterable page, skipping user filtering");
       removedCount = 0;
       currentAuthorId = null;
-      if (document.visibilityState === 'visible') {
+      if (document.visibilityState === "visible") {
         browser.runtime.sendMessage({ action: "setBadge", count: 0 });
-        logDebug('[main] Non-filterable page, reset badge to 0 (tab is visible)');
+        logDebug("[main] Non-filterable page, reset badge to 0 (tab is visible)");
       }
     }
-    
+
     browser.runtime.onMessage.addListener((message) => {
       if (message.action === "refreshBlacklist") {
-        logDebug('[main] Received refreshBlacklist message');
+        logDebug("[main] Received refreshBlacklist message");
         loadSettings().then(() => {
-			// Update thumbnail fixer on all pages
-			ThumbnailFixer.setEnabled(thumbnailFixerEnabled);
-			if (isFilterablePage()) {
-			  logDebug('[main] Processing refreshBlacklist on filterable page');
-			  refreshArtworks();
-			}
+          // Update thumbnail fixer on all pages
+          ThumbnailFixer.setEnabled(thumbnailFixerEnabled);
+          if (isFilterablePage()) {
+            logDebug("[main] Processing refreshBlacklist on filterable page");
+            refreshArtworks();
+          }
         });
       }
     });
-    
-    window.addEventListener('popstate', () => {
+
+    window.addEventListener("popstate", () => {
       if (window.location.pathname !== lastPathname) {
-        logDebug('[main] Navigation detected via URL change from', lastPathname, 'to', window.location.pathname);
+        logDebug("[main] Navigation detected via URL change from", lastPathname, "to", window.location.pathname);
         lastPathname = window.location.pathname;
         // Reinitialize thumbnail fixer on navigation
         ThumbnailFixer.setEnabled(thumbnailFixerEnabled);
         if (isFilterablePage()) {
           updatePage();
         } else {
-          logDebug('[main] Non-filterable page, skipping user filtering');
+          logDebug("[main] Non-filterable page, skipping user filtering");
           removedCount = 0;
           currentAuthorId = null;
-          if (document.visibilityState === 'visible') {
+          if (document.visibilityState === "visible") {
             browser.runtime.sendMessage({ action: "setBadge", count: 0 });
-            logDebug('[main] Non-filterable page, reset badge to 0 (tab is visible)');
+            logDebug("[main] Non-filterable page, reset badge to 0 (tab is visible)");
           }
         }
       }
     });
     const titleObserver = new MutationObserver(() => {
-      logDebug('[titleObserver] Title changed, updating page');
+      logDebug("[titleObserver] Title changed, updating page");
       // Reinitialize thumbnail fixer on title change
       ThumbnailFixer.setEnabled(thumbnailFixerEnabled);
       if (isFilterablePage()) {
         updatePage();
       } else {
-        logDebug('[titleObserver] Non-filterable page, skipping user filtering');
+        logDebug("[titleObserver] Non-filterable page, skipping user filtering");
         removedCount = 0;
         currentAuthorId = null;
-        if (document.visibilityState === 'visible') {
+        if (document.visibilityState === "visible") {
           browser.runtime.sendMessage({ action: "setBadge", count: 0 });
-          logDebug('[titleObserver] Non-filterable page, reset badge to 0 (tab is visible)');
+          logDebug("[titleObserver] Non-filterable page, reset badge to 0 (tab is visible)");
         }
       }
     });
-    titleObserver.observe(document.querySelector('title'), { childList: true });
+    titleObserver.observe(document.querySelector("title"), { childList: true });
     // Add visibilitychange listener to update badge when tab becomes active
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') {
-        logDebug('[main] Tab became visible, updating badge');
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        logDebug("[main] Tab became visible, updating badge");
         browser.runtime.sendMessage({ action: "setBadge", count: removedCount });
       }
     });
-    
-    logDebug('[main] Navigation and visibility listeners set up');
+
+    logDebug("[main] Navigation and visibility listeners set up");
   } catch (error) {
-    console.error('[main] Error:', error);
+    console.error("[main] Error:", error);
   }
 }
 
