@@ -2,4 +2,7 @@
 /scr/
 /src/
 /upload/
+/tmp
 *.txt
+compare.js
+

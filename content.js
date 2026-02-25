@@ -589,7 +589,9 @@ function updatePage() {
               waitForRecommendationGrid(); // only wait on artwork pages
             } else {
               setupArtworkObserver(); // tag pages - grids are already loaded
+              updateAllArtworks(); // process immediately on tag pages
             }
+            updateCounter();
           });
         })
         .catch((error) => {

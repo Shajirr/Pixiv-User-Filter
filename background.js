@@ -149,11 +149,12 @@ function updateWebRequestListener() {
   }
 }
 
-// Initialize context menus
-browser.runtime.onInstalled.addListener(async () => {
+// Function to handle context menu creation
+async function setupContextMenus() {
   logDebug("Pixiv User Filter: Setting up context menus");
 
   try {
+    // Clear existing menus first to avoid duplicate ID errors
     await browser.contextMenus.removeAll();
 
     const targetPatterns = ["*://*.pixiv.net/*/users/*", "*://*.pixiv.net/users/*"];
@@ -189,7 +190,13 @@ browser.runtime.onInstalled.addListener(async () => {
   } catch (error) {
     console.error("Pixiv User Filter: Critical error setting up context menus:", error);
   }
-});
+}
+
+// Initial menu setup on installation or update
+browser.runtime.onInstalled.addListener(setupContextMenus);
+
+// Fallback: Re-create menus when the browser profile starts
+browser.runtime.onStartup.addListener(setupContextMenus);
 
 browser.runtime.onMessage.addListener((message, sender) => {
   if (message.action === "setBadge") {
