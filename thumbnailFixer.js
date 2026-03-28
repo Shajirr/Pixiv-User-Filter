@@ -279,7 +279,7 @@ const ThumbnailFixer = {
       attributeFilter: ['src', 'srcset', 'style']
     });
   },
-  
+
   // Cleanup observer
   disconnect() {
     if (this.observer) {

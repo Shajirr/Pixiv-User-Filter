@@ -3,6 +3,7 @@
 /src/
 /upload/
 /tmp
+/.idea/
 *.txt
 compare.js
 
