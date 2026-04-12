@@ -148,6 +148,7 @@
         <label>
             <input type="checkbox" id="thumbnailFixer">
             Restore proper uncropped thumbnails
+            <span title="Will display full, uncropped thumbnails, maintaining correct aspect ratio." style="margin-left: 4px; cursor: help;">ⓘ</span>
         </label>
 		<label>
 			<input type="checkbox" id="limitRecommendations">
@@ -158,6 +159,11 @@
 			<input type="range" id="maxRecommendations" min="0" max="162" step="18" value="90">
 			<span id="maxRecValue">90</span>
 		</div>
+        <label for="debugMode">
+            <input type="checkbox" id="debugMode">
+            Enable debug logging
+            <span title="Default: off. Only enable if you need console logs for a bug report." style="margin-left: 4px; cursor: help;">ⓘ</span>
+        </label>
         <div class="save-container">
             <button id="save" type="submit">Save</button>
             <button id="exportBlacklist" type="button">Export Blacklist</button>

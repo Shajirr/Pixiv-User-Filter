@@ -1,7 +1,8 @@
-const DEBUG = true; // Toggle for debug logging
+let DEBUG = false;
+const debugPrefix = '[Pxv.UF]';
 
 function logDebug(...args) {
-  if (DEBUG) console.log(...args);
+  if (DEBUG) console.log(debugPrefix, ...args);
 }
 
 const DEFAULT_MAX_RECOMMENDATIONS = 90;
@@ -11,6 +12,7 @@ let removedCount = 0;
 let counterElement = null;
 let recommendationObservers = [];
 let tagContentObserver = null;
+let counterPersistenceObserver = null;
 let lastGridRefreshTime = 0;
 let lastPathname = window.location.href;
 let currentAuthorId = null;
@@ -29,27 +31,25 @@ function debounce(fn, delay) {
 
 async function loadSettings() {
   try {
-    const result = await browser.storage.local.get([
-      'blacklist',
-      'removeSameAuthor',
-      'thumbnailFixer',
-      'limitRecommendations',
-      'maxRecommendations',
-    ]);
-    settings.blacklist = new Set(result.blacklist || []);
-    settings.removeSameAuthor = result.removeSameAuthor || false;
-    thumbnailFixerEnabled = result.thumbnailFixer || false;
-
-    limitRecommendations = result.limitRecommendations || false;
-    maxRecommendations =
-      result.maxRecommendations !== undefined ? result.maxRecommendations : DEFAULT_MAX_RECOMMENDATIONS;
-
+    const result = await browser.storage.local.get({
+      blacklist: [],
+      removeSameAuthor: false,
+      thumbnailFixer: false,
+      limitRecommendations: false,
+      maxRecommendations: DEFAULT_MAX_RECOMMENDATIONS,
+      DEBUG: false,
+    });
+    settings.blacklist = new Set(result.blacklist);
+    settings.removeSameAuthor = result.removeSameAuthor;
+    thumbnailFixerEnabled = result.thumbnailFixer;
+    limitRecommendations = result.limitRecommendations;
+    maxRecommendations = result.maxRecommendations;
+    DEBUG = result.DEBUG;
+    logDebug('Debug mode set to:', DEBUG);
     logDebug(`[loadSettings] limitRecommendations=${limitRecommendations}, maxRecommendations=${maxRecommendations}`);
-
     logDebug(
       `[loadSettings] Loaded settings: blacklist=${[...settings.blacklist].join(', ')}, removeSameAuthor=${settings.removeSameAuthor}, thumbnailFixer=${thumbnailFixerEnabled}`,
     );
-
     // Update thumbnail fixer after loading settings
     ThumbnailFixer.setEnabled(thumbnailFixerEnabled);
   } catch (error) {
@@ -66,11 +66,18 @@ const selectors = {
 
 function updateCounter() {
   try {
+    // If the element exists but was detached by Pixiv, reset it
+    if (counterElement && !document.body.contains(counterElement)) {
+      logDebug('[updateCounter] Counter element detached from DOM, resetting');
+      counterElement = null;
+    }
+
     if (counterElement) {
       counterElement.textContent = `Removed: ${removedCount}`;
       logDebug(`[updateCounter] Updated counter to display: Removed: ${removedCount}`);
     } else {
       logDebug('[updateCounter] Counter element not found, cannot update counter');
+      createCounter();
     }
     if (document.visibilityState === 'visible') {
       browser.runtime.sendMessage({ action: 'setBadge', count: removedCount });
@@ -90,6 +97,9 @@ function findArtworkGridsByContent() {
   for (const ul of allULs) {
     const artworkLinks = ul.querySelectorAll('a[href*="/artworks/"]');
     const hasImages = ul.querySelector('li img');
+
+    // // Only need the links to perform filtering; images might load later.
+    // if (artworkLinks.length > 0) {
     // Must have at least 1 artwork link and contain images
     if (artworkLinks.length > 0 && hasImages) {
       candidates.push(ul);
@@ -120,7 +130,7 @@ function getArtworkGridContainers() {
   const pageType = getPageType();
   const isArtworkPage = pageType === 'artwork';
 
-  logDebug(`[getArtworkGridContainers] Detecting grids on ${isArtworkPage ? 'artwork' : 'tag'} page`);
+  logDebug(`[getArtworkGridContainers] Detecting grids on ${pageType} page:${window.location.pathname}`);
 
   let grids = [];
 
@@ -141,8 +151,16 @@ function getArtworkGridContainers() {
       grids = findArtworkGridsByContent();
     }
   } else {
-    // Tag page - div.col-span-2 grid (no ul/li)
+    // Tag page
     grids = findTagPageGrids();
+    if (grids.length === 0) {
+      logDebug(
+        `[getArtworkGridContainers] No "div.col-span-2" grid found on ${pageType}, falling back to ul/li (base tag pages)`,
+      );
+      grids = findArtworkGridsByContent();
+    } else {
+      logDebug(`[getArtworkGridContainers] Found "div.col-span-2" grid on ${pageType}`);
+    }
   }
 
   // Dedupe
@@ -162,26 +180,39 @@ function updateAllArtworks(attempt = 1, maxAttempts = 3) {
     // Collect elements for batch DOM style changes
     const elementsToHide = [];
     const elementsToShow = [];
+
     containers.forEach((container) => {
-      const pageType = getPageType();
-      const isArtworkPage = pageType === 'artwork';
-      // Tag pages use div.col-span-2 cells; artwork pages use li elements
-      const items = isArtworkPage ? container.querySelectorAll('li') : container.querySelectorAll('div.col-span-2');
+      // const pageType = getPageType();
+      // const isArtworkPage = pageType === 'artwork';
+      //// Tag pages use div.col-span-2 cells; artwork pages use li elements
+      //const items = isArtworkPage ? container.querySelectorAll('li') : container.querySelectorAll('div.col-span-2');
+
+      // Explicitly choose the correct child selector based on the actual container type
+      let items;
+      if (container.tagName === 'UL') {
+        // Artwork pages + base tag pages (/tags/BlueArchive, etc.) use <ul><li>...
+        items = container.querySelectorAll('li');
+        logDebug(`[updateAllArtworks] UL container -> using 'li' selector (${items.length} items)`);
+      } else {
+        // Newer tag pages use div.col-span-2 grid
+        items = container.querySelectorAll('div.col-span-2');
+        logDebug(`[updateAllArtworks] Grid container -> using 'div.col-span-2' selector (${items.length} items)`);
+      }
+
       totalProcessed += items.length;
-      items.forEach((li) => {
-        const result = processLi(li, settings.blacklist, currentAuthorId, settings.removeSameAuthor);
+
+      items.forEach((item) => {
+        // item = <li> OR <div class="col-span-2">
+        const result = processLi(item, settings.blacklist, currentAuthorId, settings.removeSameAuthor);
         const { shouldBlock, alreadyProcessed } = result;
+
         if (shouldBlock) {
           totalBlocked++;
           // Only add to batch if current display doesn't match desired state
-          if (li.style.display !== 'none') {
-            elementsToHide.push(li);
-          }
+          if (item.style.display !== 'none') elementsToHide.push(item);
         } else {
           // Only add to batch if current display doesn't match desired state
-          if (li.style.display === 'none') {
-            elementsToShow.push(li);
-          }
+          if (item.style.display === 'none') elementsToShow.push(item);
         }
         if (!alreadyProcessed) newlyProcessed++;
       });
@@ -298,9 +329,17 @@ function createCounter(attempt = 1, maxAttempts = 5) {
         counterElement = null;
 
         const pageType = getPageType();
+
+        // Don't create counter on base tag pages
+        if (pageType === 'tag-base') {
+          logDebug(`[createCounter] Base tag page -> skipping counter creation`);
+          resolve(true);
+          return;
+        }
+
         const isArtworkPage = pageType === 'artwork';
 
-        logDebug(`[createCounter] Page type: ${isArtworkPage ? 'Artwork' : 'Tag'} (URL: ${window.location.pathname})`);
+        logDebug(`[createCounter] Page type: ${pageType} (URL: ${window.location.pathname})`);
 
         let anchor = null;
 
@@ -308,6 +347,7 @@ function createCounter(attempt = 1, maxAttempts = 5) {
           anchor = findRecommendationHeader();
           logDebug(`[createCounter] Artwork page: anchor ${anchor ? 'found' : 'not found'}`);
         } else {
+          // tag / tag-search anchor logic
           const worksContent = document.querySelector('div[data-ga4-label="works_content"]');
           if (worksContent) {
             const flexRow = worksContent.querySelector('div.flex.flex-row.justify-between.items-center');
@@ -353,16 +393,18 @@ function createCounter(attempt = 1, maxAttempts = 5) {
           // Observe only the anchor's parent for persistence
           const observerTarget = anchor.parentNode;
           if (observerTarget) {
-            const observer = new MutationObserver(() => {
+            // Disconnect old one if it exists
+            if (counterPersistenceObserver) counterPersistenceObserver.disconnect();
+
+            counterPersistenceObserver = new MutationObserver(() => {
               // Only react if the counter is actually missing
               if (!document.querySelector('span.pixiv-recommendation-counter')) {
                 logDebug('[createCounter] Counter disappeared, recreating...');
                 createCounter(1, maxAttempts);
               }
             });
-            observer.observe(observerTarget, { childList: true, subtree: true });
-            recommendationObservers.push(observer);
-            logDebug('[createCounter] Set up targeted observer on anchor parent for counter persistence');
+            counterPersistenceObserver.observe(observerTarget, { childList: true, subtree: true });
+            logDebug('[createCounter] Set up isolated observer for counter persistence');
           }
           resolve(true);
         } else {
@@ -490,9 +532,15 @@ function getPageType() {
     return 'artwork';
   }
 
-  // Tag page (/tags/.../artworks, /illustrations, /manga)
-  if (/\/(?:en\/)?tags\/[^/]+\/(artworks|illustrations|manga)/.test(pathname)) {
-    logDebug(`[getPageType] Detected: Tag page`);
+  // Base tag page (exactly /tags/tag_name or /en/tags/tag_name)
+  if (/^\/(?:en\/)?tags\/[^\/]+\/?$/.test(pathname)) {
+    logDebug(`[getPageType] Detected: Base Tag page`);
+    return 'tag-base';
+  }
+
+  // Sub tag pages (/tags/tag_name/artworks, /illustrations, /manga)
+  if (/^\/(?:en\/)?tags\/[^\/]+\/(artworks|illustrations|manga)\/?$/.test(pathname)) {
+    logDebug(`[getPageType] Detected: Tag subpage`);
     return 'tag';
   }
 
@@ -512,21 +560,35 @@ function isFilterablePage() {
 }
 
 function waitForRecommendationGrid() {
-  const observer = new MutationObserver(() => {
-    const zone = document.querySelector(selectors.recommendZone);
-    if (!zone) return;
+  const pageType = getPageType();
 
-    const ul = zone.querySelector('ul');
-    if (ul && ul.querySelector('li a[href*="/artworks/"]')) {
-      logDebug('[waitForRecommendationGrid] <ul> with artworks loaded -> setting up observer');
+  const checkGrids = () => {
+    // Use the centralized grid detection logic
+    const grids = getArtworkGridContainers();
+    if (grids.length > 0) {
+      logDebug(
+        `[waitForRecommendationGrid] ${grids.length} grid(s) detected via mutation, setting up artwork observer`,
+      );
       observer.disconnect();
       setupArtworkObserver();
       updateAllArtworks();
     }
+  };
+
+  // Debounce the grids check
+  const debouncedGridsCheck = debounce(checkGrids, 500);
+
+  // Observer uses the debounced grids check
+  const observer = new MutationObserver(() => {
+    debouncedGridsCheck();
   });
 
+  // Watch the body for structural changes (like the scroll-triggered injection)
   observer.observe(document.body, { childList: true, subtree: true });
-  logDebug('[waitForRecommendationGrid] Watching for recommendation grid on artwork page');
+  recommendationObservers.push(observer);
+  logDebug(
+    `[waitForRecommendationGrid] Watching for recommendation artwork grids grid on ${pageType} page: ${window.location.pathname}`,
+  );
 }
 
 function setupArtworkObserver() {
@@ -597,11 +659,15 @@ function setupTagPageContentObserver() {
   }
 
   const pageType = getPageType();
-  const isTagPage = pageType === 'tag' || pageType === 'tag-search';
+  // Base tag pages (tag-base) have no infinite loading -> skip observer
+  if (pageType !== 'tag' && pageType !== 'tag-search') return;
 
-  if (!isTagPage) return;
+  let grids = findTagPageGrids();
+  if (grids.length === 0) {
+    logDebug('[tagContentObserver] No col-span-2 grid, checking for ul/li (base tag pages)');
+    grids = findArtworkGridsByContent();
+  }
 
-  const grids = findTagPageGrids();
   if (grids.length === 0) {
     logDebug('[tagContentObserver] Grid not found yet -> retrying in 800ms');
     setTimeout(setupTagPageContentObserver, 800);
@@ -618,21 +684,25 @@ function setupTagPageContentObserver() {
 
   tagContentObserver = new MutationObserver((mutations) => {
     const now = Date.now();
-    if (now - lastGridRefreshTime < 1000) return; // longer cooldown
+    if (now - lastGridRefreshTime < 1000) return;
 
-    // Only react to new col-span-2 elements being added
+    // Detect both new col-span-2 cells and new <li> elements
     let hasNewArtworkCells = false;
     for (const mutation of mutations) {
       if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
         for (const node of mutation.addedNodes) {
           if (
             node.nodeType === Node.ELEMENT_NODE &&
-            (node.classList?.contains('col-span-2') || node.querySelector?.('div.col-span-2'))
+            (node.classList?.contains('col-span-2') ||
+              node.querySelector?.('div.col-span-2') ||
+              node.tagName === 'LI' ||
+              node.querySelector?.('li'))
           ) {
             hasNewArtworkCells = true;
             break;
           }
         }
+        if (hasNewArtworkCells) break;
       }
       if (hasNewArtworkCells) break;
     }
@@ -666,7 +736,7 @@ function refreshArtworks(isPagination = false) {
 
       // Return if the page is not filterable
       const pageType = getPageType();
-      if (!pageType) return;
+      if (!isFilterablePage()) return;
 
       // Clear processed elements cache when blacklist changes
       processedLiElements = new WeakMap();
@@ -683,26 +753,28 @@ function refreshArtworks(isPagination = false) {
 
       setupArtworkObserver();
 
-      const isTagPage = pageType === 'tag' || pageType === 'tag-search';
+      const isTagPagination = isPagination && (pageType === 'tag' || pageType === 'tag-search');
 
-      if (isPagination && isTagPage) {
+      if (isTagPagination) {
         // Tag/tag-search pages: header row is completely replaced on pagination -> always recreate
         if (counterElement) {
           counterElement.remove();
           counterElement = null;
         }
-        logDebug('[refreshArtworks] Tag page -> forcing counter recreation');
+        logDebug(`[refreshArtworks] ${pageType} pagination -> forcing counter recreation`);
         createCounter().then((success) => {
           if (!success) logDebug('[refreshArtworks] Counter creation failed');
         });
       } else {
-        // Artwork page or blacklist update -> update existing counter
-        if (!counterElement) {
-          logDebug('[refreshArtworks] Artwork page -> creating counter (was missing)');
+        // For artwork pages (and non-pagination refreshes) create the counter if it's missing
+        const shouldHaveCounter = pageType === 'artwork' || pageType === 'tag' || pageType === 'tag-search';
+        if (shouldHaveCounter && !counterElement) {
+          logDebug(`[refreshArtworks] ${pageType} -> creating missing counter`);
           createCounter().then((success) => {
             if (!success) logDebug('[refreshArtworks] Counter creation failed');
           });
         }
+        // tag-base pages never get a counter
       }
     }, 250); // debounce timer
   } catch (error) {
@@ -722,24 +794,27 @@ function updatePage() {
     recommendationObservers = [];
     logDebug('[updatePage] Disconnected previous recommendation observers');
 
-    const pageType = getPageType();
-    const wasTagPage = counterElement && (pageType === 'tag' || pageType === 'tag-search');
+    // Clear the counter observer on page change
+    if (counterPersistenceObserver) {
+      counterPersistenceObserver.disconnect();
+      counterPersistenceObserver = null;
+    }
 
-    if (counterElement && !wasTagPage) {
+    const pageType = getPageType();
+    const shouldHaveCounter = pageType === 'artwork' || pageType === 'tag' || pageType === 'tag-search';
+
+    if (counterElement && !shouldHaveCounter) {
       counterElement.remove();
       counterElement = null;
       logDebug('[updatePage] Removed previous counter element');
-    } else if (counterElement) {
-      logDebug('[updatePage] Keeping existing counter (tag/search pagination)');
+    } else if (counterElement && shouldHaveCounter) {
+      logDebug('[updatePage] Keeping existing counter');
     }
 
     if (isFilterablePage()) {
-      logDebug('[updatePage] Filterable page detected, processing');
-      logDebug(`[updatePage] Remove same author toggle: ${settings.removeSameAuthor}`);
+      logDebug(`[updatePage] Filterable page detected: ${pageType}, processing`);
 
-      const pageType = getPageType();
       const isArtworkPage = pageType === 'artwork';
-
       const authorPromise = isArtworkPage ? getPageAuthorId() : Promise.resolve(null);
 
       if (isArtworkPage) {
@@ -768,6 +843,7 @@ function updatePage() {
         .catch((error) => {
           console.error('[updatePage] Error resolving getPageAuthorId:', error);
         });
+
       setupTagPageContentObserver();
     } else {
       logDebug('[updatePage] Non-filterable page, skipping recommendation processing');
@@ -880,5 +956,13 @@ async function main() {
     console.error('[main] Error:', error);
   }
 }
+
+// Listen for storage changes
+browser.storage.onChanged.addListener((changes, namespace) => {
+  if (namespace === 'local' && changes.DEBUG) {
+    DEBUG = changes.DEBUG.newValue ?? false;
+    logDebug('Debug mode changed to:', DEBUG);
+  }
+});
 
 main();

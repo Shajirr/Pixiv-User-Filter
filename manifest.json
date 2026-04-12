@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Pixiv User Filter",
-  "version": "2026.3.28",
+  "version": "2026.4.12",
   "description": "Hides Pixiv artworks of blacklisted users",
 
   "browser_specific_settings": {

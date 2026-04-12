@@ -1,7 +1,8 @@
-const DEBUG = true;
+let DEBUG = false;
+const debugPrefix = '[Pxv.UF]';
 
 function logDebug(...args) {
-  if (DEBUG) console.log(...args);
+  if (DEBUG) console.log(debugPrefix, ...args);
 }
 
 function debounce(fn, delay) {
@@ -24,7 +25,7 @@ function setTextareaHeight() {
 }
 
 function parseBlacklist(input) {
-  const lines = input.split('\n').filter(line => line.trim());
+  const lines = input.split('\n').filter((line) => line.trim());
   const ids = [];
   if (lines.length === 0) return { isValid: true, ids };
   for (let i = 0; i < lines.length; i++) {
@@ -60,24 +61,27 @@ function showSaveMessage(messageText, isSuccess) {
 }
 
 function exportBlacklist() {
-  browser.storage.local.get('blacklist').then(result => {
-    const blacklist = result.blacklist || [];
-    const content = blacklist.join('\n');
-    const blob = new Blob([content], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const isoDate = new Date().toISOString().split('T')[0]; // Use only the date part (YYYY-MM-DD)
-    a.download = `pixiv_blacklist_${isoDate}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    showSaveMessage('Blacklist exported successfully', true);
-  }).catch(error => {
-    console.error('[exportBlacklist] Error:', error);
-    showSaveMessage('Failed to export blacklist', false);
-  });
+  browser.storage.local
+    .get('blacklist')
+    .then((result) => {
+      const blacklist = result.blacklist || [];
+      const content = blacklist.join('\n');
+      const blob = new Blob([content], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const isoDate = new Date().toISOString().split('T')[0]; // Use only the date part (YYYY-MM-DD)
+      a.download = `pixiv_blacklist_${isoDate}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showSaveMessage('Blacklist exported successfully', true);
+    })
+    .catch((error) => {
+      console.error('[exportBlacklist] Error:', error);
+      showSaveMessage('Failed to export blacklist', false);
+    });
 }
 
 function updateMaxRecValue(value) {
@@ -101,12 +105,16 @@ const form = document.getElementById('options-form');
 const exportButton = document.getElementById('exportBlacklist');
 const limitCheckbox = document.getElementById('limitRecommendations');
 const maxRecSlider = document.getElementById('maxRecommendations');
+const debugModeCheckbox = document.getElementById('debugMode');
 
-textarea.addEventListener('input', debounce(() => {
-  setTextareaHeight();
-  const validationResult = parseBlacklist(textarea.value);
-  showErrorMessage(validationResult);
-}, 300));
+textarea.addEventListener(
+  'input',
+  debounce(() => {
+    setTextareaHeight();
+    const validationResult = parseBlacklist(textarea.value);
+    showErrorMessage(validationResult);
+  }, 300),
+);
 
 form.addEventListener('submit', (e) => {
   e.preventDefault();
@@ -115,19 +123,23 @@ form.addEventListener('submit', (e) => {
   if (result.isValid) {
     const removeSameAuthor = document.getElementById('removeSameAuthor').checked;
     const thumbnailFixer = document.getElementById('thumbnailFixer').checked;
-	const limitRecommendations = limitCheckbox.checked;
-	const maxRecommendations = parseInt(maxRecSlider.value, 10);
-	
-    browser.storage.local.set({ 
-      blacklist: result.ids, 
-      removeSameAuthor,
-      thumbnailFixer,
-	  limitRecommendations, 
-	  maxRecommendations
-    }).then(() => {
-      showSaveMessage('Settings saved', true);
-      browser.runtime.sendMessage({ action: "refreshBlacklist" });
-    });
+    const limitRecommendations = limitCheckbox.checked;
+    const maxRecommendations = parseInt(maxRecSlider.value, 10);
+    const DEBUG = debugModeCheckbox.checked;
+
+    browser.storage.local
+      .set({
+        blacklist: result.ids,
+        removeSameAuthor,
+        thumbnailFixer,
+        limitRecommendations,
+        maxRecommendations,
+        DEBUG,
+      })
+      .then(() => {
+        showSaveMessage('Settings saved', true);
+        browser.runtime.sendMessage({ action: 'refreshBlacklist' });
+      });
   } else {
     showSaveMessage('Settings not saved, error in the Blacklisted User ID list', false);
   }
@@ -143,27 +155,44 @@ limitCheckbox.addEventListener('change', (e) => {
   toggleSliderState(e.target.checked);
 });
 
-browser.storage.local.get(['blacklist', 'removeSameAuthor', 'thumbnailFixer', 'limitRecommendations', 'maxRecommendations']).then(result => {
-  textarea.value = (result.blacklist || []).join('\n');
-  document.getElementById('removeSameAuthor').checked = result.removeSameAuthor || false;
-  document.getElementById('thumbnailFixer').checked = result.thumbnailFixer || false;
-  limitCheckbox.checked = result.limitRecommendations !== undefined ? result.limitRecommendations : false;
-  maxRecSlider.value = result.maxRecommendations || DEFAULT_MAX_RECOMMENDATIONS;
-  updateMaxRecValue(maxRecSlider.value);
-  toggleSliderState(limitCheckbox.checked);
-  setTextareaHeight();
-  const validationResult = parseBlacklist(textarea.value);
-  showErrorMessage(validationResult);
-});
+browser.storage.local
+  .get({
+    blacklist: [],
+    removeSameAuthor: false,
+    thumbnailFixer: false,
+    limitRecommendations: false,
+    maxRecommendations: DEFAULT_MAX_RECOMMENDATIONS,
+    DEBUG: false,
+  })
+  .then((result) => {
+    DEBUG = result.DEBUG;
+    logDebug('Debug mode set to:', DEBUG);
+    debugModeCheckbox.checked = DEBUG;
+    textarea.value = result.blacklist.join('\n');
+    document.getElementById('removeSameAuthor').checked = result.removeSameAuthor;
+    document.getElementById('thumbnailFixer').checked = result.thumbnailFixer;
+    limitCheckbox.checked = result.limitRecommendations;
+    maxRecSlider.value = result.maxRecommendations;
+    updateMaxRecValue(maxRecSlider.value);
+    toggleSliderState(limitCheckbox.checked);
+    setTextareaHeight();
+    const validationResult = parseBlacklist(textarea.value);
+    showErrorMessage(validationResult);
+  });
 
 // Listen for storage changes to keep the options page in sync
-browser.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName === 'local' && changes.blacklist) {
+browser.storage.onChanged.addListener((changes, namespace) => {
+  if (namespace === 'local' && changes.blacklist) {
     const newBlacklist = changes.blacklist.newValue || [];
     textarea.value = newBlacklist.join('\n');
     setTextareaHeight();
     const validationResult = parseBlacklist(textarea.value);
     showErrorMessage(validationResult);
     logDebug('Options page: Blacklist updated from storage');
+  }
+  if (namespace === 'local' && changes.DEBUG) {
+    DEBUG = changes.DEBUG.newValue ?? false;
+    logDebug('Debug mode changed to:', DEBUG);
+    debugModeCheckbox.checked = DEBUG;
   }
 });
