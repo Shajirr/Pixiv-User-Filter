@@ -1,5 +1,7 @@
-function logDebug(...args) {
-  if (DEBUG) console.log(debugPrefix, ...args);
+debugPrefixLocal = '[ThumbnailFixer]';
+
+function logDebugLocal(...args) {
+  if (DEBUG) console.log(debugPrefixLocal, ...args);
 }
 
 const ThumbnailFixer = {
@@ -31,7 +33,7 @@ const ThumbnailFixer = {
   // Initialize the thumbnail fixer
   init(enabled = false) {
     this.isEnabled = enabled;
-    logDebug(`[ThumbnailFixer.init] Initializing with enabled=${enabled}`);
+    logDebugLocal(`[init] Initializing with enabled=${enabled}`);
     if (enabled) {
       this.processExistingThumbnails();
       this.setupObserver();
@@ -98,12 +100,12 @@ const ThumbnailFixer = {
   // Check if URL is a thumbnail that needs fixing
   needsFixing(src) {
     if (!src || !this.isEnabled) {
-      logDebug(`[ThumbnailFixer.needsFixing] Skipping: src=${src}, isEnabled=${this.isEnabled}`);
+      logDebugLocal(`[needsFixing] Skipping: src=${src}, isEnabled=${this.isEnabled}`);
       return false;
     }
     const isThumbnail = this.srcRegexp.test(src);
     if (!isThumbnail) {
-      logDebug(`[ThumbnailFixer.needsFixing] No match for URL: ${src}`);
+      logDebugLocal(`[needsFixing] No match for URL: ${src}`);
       return false;
     }
     const needsFix =
@@ -111,8 +113,8 @@ const ThumbnailFixer = {
       src.includes('_custom1200') ||
       src.includes('/custom-thumb/') ||
       src.includes('_a2');
-    logDebug(
-      `[ThumbnailFixer.needsFixing] URL: ${src}, isThumbnail: ${isThumbnail}, Has _square1200: ${src.includes('_square1200')}, Has _custom1200: ${src.includes('_custom1200')}, Has custom-thumb: ${src.includes('/custom-thumb/')}, Has _a2: ${src.includes('_a2')}, Needs fixing: ${needsFix}`,
+    logDebugLocal(
+      `[needsFixing] URL: ${src}, isThumbnail: ${isThumbnail}, Has _square1200: ${src.includes('_square1200')}, Has _custom1200: ${src.includes('_custom1200')}, Has custom-thumb: ${src.includes('/custom-thumb/')}, Has _a2: ${src.includes('_a2')}, Needs fixing: ${needsFix}`,
     );
     return needsFix;
   },
@@ -126,16 +128,16 @@ const ThumbnailFixer = {
     // Replace _square1200 or _custom1200 with _master1200
     if (newUrl.includes('_square1200')) {
       newUrl = newUrl.replace('_square1200', '_master1200');
-      logDebug(`[ThumbnailFixer] Replaced _square1200 with _master1200: ${src} -> ${newUrl}`);
+      logDebugLocal(`[ThumbnailFixer] Replaced _square1200 with _master1200: ${src} -> ${newUrl}`);
     } else if (newUrl.includes('_custom1200')) {
       newUrl = newUrl.replace('_custom1200', '_master1200');
-      logDebug(`[ThumbnailFixer] Replaced _custom1200 with _master1200: ${src} -> ${newUrl}`);
+      logDebugLocal(`[ThumbnailFixer] Replaced _custom1200 with _master1200: ${src} -> ${newUrl}`);
     }
 
     // Replace custom-thumb with img-master
     if (newUrl.includes('/custom-thumb/')) {
       newUrl = newUrl.replace('/custom-thumb/', '/img-master/');
-      logDebug(`[ThumbnailFixer] Replaced custom-thumb with img-master: ${src} -> ${newUrl}`);
+      logDebugLocal(`[ThumbnailFixer] Replaced custom-thumb with img-master: ${src} -> ${newUrl}`);
     }
 
     // Replace _a2 quality with next best quality
@@ -145,23 +147,25 @@ const ThumbnailFixer = {
         const oldQuality = qualityMatch[1];
         const newQuality = this.getNextQuality(oldQuality.replace('_a2', ''));
         newUrl = newUrl.replace(oldQuality, newQuality);
-        logDebug(`[ThumbnailFixer] Replaced quality ${oldQuality} with ${newQuality} due to _a2: ${src} -> ${newUrl}`);
+        logDebugLocal(
+          `[ThumbnailFixer] Replaced quality ${oldQuality} with ${newQuality} due to _a2: ${src} -> ${newUrl}`,
+        );
       }
     }
 
-    logDebug(`[ThumbnailFixer] Fixed URL: ${src} -> ${newUrl}`);
+    logDebugLocal(`[ThumbnailFixer] Fixed URL: ${src} -> ${newUrl}`);
     return newUrl;
   },
 
   // Fix a single image element
   fixImageElement(img) {
     if (this.processedElements.has(img)) {
-      logDebug(`[ThumbnailFixer.fixImageElement] Skipping already processed image: ${img.src}`);
+      logDebugLocal(`[fixImageElement] Skipping already processed image: ${img.src}`);
       return;
     }
 
     const originalSrc = img.src;
-    logDebug(`[ThumbnailFixer.fixImageElement] Processing image: ${originalSrc}`);
+    logDebugLocal(`[fixImageElement] Processing image: ${originalSrc}`);
     const fixedSrc = this.fixThumbnailUrl(originalSrc);
 
     if (fixedSrc !== originalSrc) {
@@ -169,7 +173,7 @@ const ThumbnailFixer = {
 
       // Also fix srcset if present
       if (img.srcset) {
-        logDebug(`[ThumbnailFixer.fixImageElement] Fixing srcset: ${img.srcset}`);
+        logDebugLocal(`[fixImageElement] Fixing srcset: ${img.srcset}`);
         img.srcset = img.srcset.replace(this.srcRegexp, (match, domain, quality, q1, a2, pathType, imageId) => {
           let newQuality = quality;
           if (a2) newQuality = this.getNextQuality(quality);
@@ -181,7 +185,7 @@ const ThumbnailFixer = {
       const currentObjectFit = window.getComputedStyle(img).objectFit;
       if (currentObjectFit === 'cover' || img.style.objectFit === 'cover') {
         img.style.objectFit = 'contain';
-        logDebug(`[ThumbnailFixer.fixImageElement] Changed object-fit to contain for: ${fixedSrc}`);
+        logDebugLocal(`[fixImageElement] Changed object-fit to contain for: ${fixedSrc}`);
       }
     }
 
@@ -214,24 +218,24 @@ const ThumbnailFixer = {
   // Process all existing thumbnails on the page
   processExistingThumbnails() {
     if (!this.isEnabled) {
-      logDebug('[ThumbnailFixer.processExistingThumbnails] Skipping: ThumbnailFixer is disabled');
+      logDebugLocal('[processExistingThumbnails] Skipping: ThumbnailFixer is disabled');
       return;
     }
 
     // Clear processed elements to ensure all images are rechecked
     this.processedElements = new WeakSet();
-    logDebug('[ThumbnailFixer.processExistingThumbnails] Cleared processedElements cache');
+    logDebugLocal('[processExistingThumbnails] Cleared processedElements cache');
 
     // Fix IMG elements
     const images = document.querySelectorAll('img[src*="pximg.net"]');
-    logDebug(`[ThumbnailFixer.processExistingThumbnails] Found ${images.length} IMG elements`);
+    logDebugLocal(`[processExistingThumbnails] Found ${images.length} IMG elements`);
     images.forEach((img) => {
       this.fixImageElement(img);
     });
 
     // Fix CSS background images
     const bgElements = document.querySelectorAll('[style*="background-image"]');
-    logDebug(`[ThumbnailFixer.processExistingThumbnails] Found ${bgElements.length} background image elements`);
+    logDebugLocal(`[processExistingThumbnails] Found ${bgElements.length} background image elements`);
     bgElements.forEach((element) => {
       this.fixBackgroundImage(element);
     });
@@ -286,7 +290,7 @@ const ThumbnailFixer = {
     });
   },
 
-  // Cleanup observer
+  // Clean-up observer
   disconnect() {
     if (this.observer) {
       this.observer.disconnect();

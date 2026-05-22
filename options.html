@@ -1,175 +1,196 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="color-scheme" content="light dark">
-    <link rel="stylesheet" href="chrome://global/skin/in-content/common.css">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="stylesheet" href="chrome://global/skin/in-content/common.css" />
     <title>Pixiv User Filter Options</title>
     <style>
-        body {
-            padding: 20px;
-            font-family: system-ui, -apple-system, sans-serif;
-            font-size: 14px;
-        }
-        form {
-            display: flex;
-            flex-direction: column;
-            gap: 15px;
-            max-width: 600px;
-        }
-        label {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-            font-size: 14px;
-        }
+      body {
+        padding: 20px;
+        font-family:
+          system-ui,
+          -apple-system,
+          sans-serif;
+        font-size: 14px;
+      }
+      form {
+        display: flex;
+        flex-direction: column;
+        gap: 15px;
+        max-width: 600px;
+      }
+      label {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 14px;
+      }
+      textarea {
+        width: 150px;
+        min-height: 20px;
+        padding: 8px;
+        border: 1px solid var(--in-content-box-border-color, #ccc);
+        border-radius: 4px;
+        background-color: var(--in-content-box-background, #fff);
+        color: var(--in-content-text-color, #000);
+        font-size: 14px;
+        resize: vertical;
+        overflow-y: auto;
+      }
+      textarea.invalid {
+        border-color: var(--in-content-error-color, #c93434);
+      }
+      input[type='checkbox'] {
+        width: 16px;
+        height: 16px;
+        accent-color: var(--in-content-primary-button-background, #0060df);
+      }
+      button {
+        width: auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 5px 10px;
+        background-color: #e0e0e0;
+        color: #000;
+        border: 1px solid var(--in-content-button-border-color, #ccc);
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      button:hover,
+      button:active {
+        background-color: #d0d0d0; /* Lighter gray for hover/active in light mode */
+      }
+      .save-container {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      #status-message {
+        visibility: collapse;
+        font-size: 14px;
+        opacity: 0;
+        overflow: hidden;
+        transition:
+                opacity 0.5s ease-in-out,
+                max-height 0.5s ease-in-out;
+      }
+      #status-message.visible {
+        visibility: visible;
+        opacity: 1;
+      }
+      #error-message {
+        font-size: 14px;
+        display: none;
+        opacity: 0;
+        transition: opacity 0.5s ease-in-out;
+        color: var(--in-content-error-color, #c93434);
+      }
+      #error-message.visible {
+        display: block;
+        opacity: 1;
+      }
+      .description {
+        font-size: 0.9em;
+        color: var(--in-content-text-color, #555);
+        margin-top: 5px;
+      }
+      .slider-container.disabled {
+        opacity: 0.5;
+        pointer-events: none;
+      }
+      .slider-container.disabled label,
+      .slider-container.disabled span {
+        color: var(--in-content-text-color, #888); /* Grey text */
+      }
+
+      /* Dark mode adjustments */
+      @media (prefers-color-scheme: dark) {
         textarea {
-            width: 150px;
-            min-height: 20px;
-            padding: 8px;
-            border: 1px solid var(--in-content-box-border-color, #ccc);
-            border-radius: 4px;
-            background-color: var(--in-content-box-background, #fff);
-            color: var(--in-content-text-color, #000);
-            font-size: 14px;
-            resize: vertical;
-            overflow-y: auto;
+          background-color: var(--in-content-box-background, #3a3a3e);
+          color: var(--in-content-text-color, #d0d0d0);
+          border-color: var(--in-content-box-border-color, #4a4a4e);
         }
         textarea.invalid {
-            border-color: var(--in-content-error-color, #c93434);
-        }
-        input[type="checkbox"] {
-            width: 16px;
-            height: 16px;
-            accent-color: var(--in-content-primary-button-background, #0060df);
+          border-color: var(--in-content-error-color, #e04f5f);
         }
         button {
-            width: auto;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            padding: 5px 10px;
-            background-color: #e0e0e0; /* Light gray for light mode */
-            color: #000; /* Black text in light mode */
-            border: 1px solid var(--in-content-button-border-color, #ccc);
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
+          background-color: #4a4a4e; /* Medium gray for dark mode */
+          color: #fff; /* White text in dark mode */
+          border: 1px solid var(--in-content-button-border-color, #ccc);
         }
-        button:hover, button:active {
-            background-color: #d0d0d0; /* Lighter gray for hover/active in light mode */
+        button:hover,
+        button:active {
+          background-color: #5a5a5e; /* Lighter gray for hover/active in dark mode */
         }
-        .save-container {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        #save-message {
-            font-size: 14px;
-            visibility: hidden;
-            opacity: 0;
-            transition: opacity 0.5s ease-in-out, visibility 0.5s ease-in-out;
-            color: var(--in-content-text-color, #000);
-        }
-        #save-message.visible {
-            visibility: visible;
-            opacity: 1;
+        #status-message {
+          color: var(--in-content-text-color, #d0d0d0);
         }
         #error-message {
-            font-size: 14px;
-            display: none;
-            opacity: 0;
-            transition: opacity 0.5s ease-in-out;
-            color: var(--in-content-error-color, #c93434);
-        }
-        #error-message.visible {
-            display: block;
-            opacity: 1;
+          color: var(--in-content-error-color, #e04f5f);
         }
         .description {
-            font-size: 0.9em;
-            color: var(--in-content-text-color, #555);
-            margin-top: 5px;
+          color: var(--in-content-text-color, #aaa);
         }
-		.slider-container.disabled {
-		opacity: 0.5;
-		pointer-events: none;
-		}
-		.slider-container.disabled label,
-		.slider-container.disabled span {
-		color: var(--in-content-text-color, #888); /* Grey text */
-		}
-		
-        /* Dark mode adjustments */
-        @media (prefers-color-scheme: dark) {
-            textarea {
-                background-color: var(--in-content-box-background, #3a3a3e);
-                color: var(--in-content-text-color, #d0d0d0);
-                border-color: var(--in-content-box-border-color, #4a4a4e);
-            }
-            textarea.invalid {
-                border-color: var(--in-content-error-color, #e04f5f);
-            }
-            button {
-                background-color: #4a4a4e; /* Medium gray for dark mode */
-                color: #fff; /* White text in dark mode */
-                border: 1px solid var(--in-content-button-border-color, #ccc);
-            }
-            button:hover, button:active {
-                background-color: #5a5a5e; /* Lighter gray for hover/active in dark mode */
-            }
-            #save-message {
-                color: var(--in-content-text-color, #d0d0d0);
-            }
-            #error-message {
-                color: var(--in-content-error-color, #e04f5f);
-            }
-            .description {
-                color: var(--in-content-text-color, #aaa);
-            }
-			.slider-container.disabled label,
-			.slider-container.disabled span {
-				color: var(--in-content-text-color, #888); /* Grey text in dark mode */
-			}
+        .slider-container.disabled label,
+        .slider-container.disabled span {
+          color: var(--in-content-text-color, #888); /* Grey text in dark mode */
         }
-		
+      }
     </style>
-</head>
-<body>
+  </head>
+  <body>
     <form id="options-form">
-        <label for="blacklist">Blacklisted User IDs (one per line):</label>
-        <textarea id="blacklist" aria-describedby="error-message"></textarea>
-        <span id="error-message" role="alert">Invalid input detected</span>
-        <label>
-            <input type="checkbox" id="removeSameAuthor">
-            Remove recommendations from the same author
-        </label>
-        <label>
-            <input type="checkbox" id="thumbnailFixer">
-            Restore proper uncropped thumbnails
-            <span title="Will display full, uncropped thumbnails, maintaining correct aspect ratio." style="margin-left: 4px; cursor: help;">ⓘ</span>
-        </label>
-		<label>
-			<input type="checkbox" id="limitRecommendations">
-			Limit the number of recommendations
-		</label>
-		<div class="slider-container" style="display: flex; align-items: center; gap: 10px;">
-			<label for="maxRecommendations">Max recommendations:</label>
-			<input type="range" id="maxRecommendations" min="0" max="162" step="18" value="90">
-			<span id="maxRecValue">90</span>
-		</div>
-        <label for="debugMode">
-            <input type="checkbox" id="debugMode">
-            Enable debug logging
-            <span title="Default: off. Only enable if you need console logs for a bug report." style="margin-left: 4px; cursor: help;">ⓘ</span>
-        </label>
-        <div class="save-container">
-            <button id="save" type="submit">Save</button>
-            <button id="exportBlacklist" type="button">Export Blacklist</button>
-            <span id="save-message">Settings saved</span>
+      <label for="blacklist">Blacklisted User IDs (one per line):</label>
+      <textarea id="blacklist" aria-describedby="error-message"></textarea>
+      <span id="error-message" role="alert">Invalid input detected</span>
+      <label>
+        <input type="checkbox" id="removeSameAuthor" />
+        Remove recommendations from the same author
+      </label>
+      <label>
+        <input type="checkbox" id="thumbnailFixer" />
+        Restore proper uncropped thumbnails
+        <span
+          title="Will display full, uncropped thumbnails, maintaining correct aspect ratio."
+          style="margin-left: 4px; cursor: help"
+          >ⓘ</span
+        >
+      </label>
+      <label>
+        <input type="checkbox" id="limitRecommendations" />
+        Limit the number of recommendations
+      </label>
+      <div class="slider-container" style="display: flex; align-items: center; gap: 10px">
+        <label for="maxRecommendations">Max recommendations:</label>
+        <input type="range" id="maxRecommendations" min="0" max="162" step="18" value="90" />
+        <span id="maxRecValue">90</span>
+      </div>
+      <label for="debugMode">
+        <input type="checkbox" id="debugMode" />
+        Enable debug logging
+        <span
+          title="Default: off. Only enable if you need console logs for a bug report."
+          style="margin-left: 4px; cursor: help">ⓘ</span>
+      </label>
+      <div class="save-container" style="display: flex; flex-direction: column; gap: 10px; align-items: flex-start">
+        <div class="button-group" style="display: flex; gap: 10px; flex-wrap: wrap">
+          <button id="save" type="submit">Save</button>
+          <button id="exportBlacklist" type="button">Export Blacklist</button>
+          <button id="saveBackup" type="button">Save Backup</button>
+          <button id="loadBackup" type="button">Load Backup</button>
+          <input type="file" id="loadBackupFile" accept=".json" style="display: none" />
         </div>
+        <p style="font-size: 0.8rem; margin-top: 0; margin-bottom: 5px">
+          ℹ️ Automatic backups are saved in Firefox's default download location, at:<br>
+          <strong>[FF-addon-backups] / [Pxv.UF-backups]</strong>
+        </p>
+        <span id="status-message">Settings saved</span>
+      </div>
     </form>
     <script src="options.js"></script>
-</body>
+  </body>
 </html>

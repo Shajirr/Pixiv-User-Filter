@@ -51,12 +51,12 @@ function showErrorMessage(validationResult) {
   }
 }
 
-function showSaveMessage(messageText, isSuccess) {
-  const saveMessage = document.getElementById('save-message');
-  saveMessage.textContent = messageText;
-  saveMessage.classList.add('visible');
+function showStatusMessage(messageText, isSuccess) {
+  const statusMessage = document.getElementById('status-message');
+  statusMessage.textContent = messageText;
+  statusMessage.classList.add('visible');
   setTimeout(() => {
-    saveMessage.classList.remove('visible');
+    statusMessage.classList.remove('visible');
   }, 3000);
 }
 
@@ -76,11 +76,11 @@ function exportBlacklist() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      showSaveMessage('Blacklist exported successfully', true);
+      showStatusMessage('Blacklist exported successfully', true);
     })
     .catch((error) => {
       console.error('[exportBlacklist] Error:', error);
-      showSaveMessage('Failed to export blacklist', false);
+      showStatusMessage('Failed to export blacklist', false);
     });
 }
 
@@ -106,6 +106,9 @@ const exportButton = document.getElementById('exportBlacklist');
 const limitCheckbox = document.getElementById('limitRecommendations');
 const maxRecSlider = document.getElementById('maxRecommendations');
 const debugModeCheckbox = document.getElementById('debugMode');
+const saveBackupBtn = document.getElementById('saveBackup');
+const loadBackupBtn = document.getElementById('loadBackup');
+const loadBackupFile = document.getElementById('loadBackupFile');
 
 textarea.addEventListener(
   'input',
@@ -137,15 +140,69 @@ form.addEventListener('submit', (e) => {
         DEBUG,
       })
       .then(() => {
-        showSaveMessage('Settings saved', true);
+        showStatusMessage('Settings saved', true);
         browser.runtime.sendMessage({ action: 'refreshBlacklist' });
       });
   } else {
-    showSaveMessage('Settings not saved, error in the Blacklisted User ID list', false);
+    showStatusMessage('Settings not saved, error in the Blacklisted User ID list', false);
   }
 });
 
 exportButton.addEventListener('click', exportBlacklist);
+
+saveBackupBtn.addEventListener('click', () => {
+  showStatusMessage('Creating backup...', false);
+  browser.runtime.sendMessage({ action: 'manualBackup' }).then((success) => {
+    if (success) {
+      showStatusMessage('Backup saved successfully', false);
+    } else {
+      showStatusMessage('Backup either cancelled or failed', true);
+    }
+  });
+});
+
+loadBackupBtn.addEventListener('click', () => {
+  loadBackupFile.click(); // Trigger the hidden file input
+});
+
+loadBackupFile.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = function (event) {
+    try {
+      const data = JSON.parse(event.target.result);
+      const blacklistCount = Array.isArray(data.blacklist) ? data.blacklist.length : 0;
+
+      // The warning prompt
+      const confirmed = confirm(
+        `WARNING: Loading this backup will overwrite your current blacklist and settings.\n\n` +
+          `The incoming blacklist contains ${blacklistCount} user IDs.\n\n` +
+          `Do you want to proceed?`,
+      );
+
+      if (confirmed) {
+        // Strip backup_manager_state just in case
+        delete data.backup_manager_state;
+
+        browser.storage.local.set(data).then(() => {
+          showStatusMessage('Backup loaded successfully', true);
+          browser.runtime.sendMessage({ action: 'refreshBlacklist' });
+          // Reload the page after 1s to visually reflect the newly loaded settings
+          setTimeout(() => window.location.reload(), 1500);
+        });
+      }
+    } catch (err) {
+      console.error('[loadBackup] Error:', err);
+      alert('Failed to parse backup file. Make sure it is a valid JSON file.');
+    }
+    // Reset the input value so the exact same file can be selected again if needed
+    loadBackupFile.value = '';
+  };
+
+  reader.readAsText(file);
+});
 
 maxRecSlider.addEventListener('input', (e) => {
   updateMaxRecValue(e.target.value);

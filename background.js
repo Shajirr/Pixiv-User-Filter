@@ -1,3 +1,5 @@
+import { BackupManager } from './backup-manager.js';
+
 let DEBUG = false;
 const debugPrefix = '[Pxv.UF]';
 
@@ -220,6 +222,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
       batchCounts.set(sender.tab.id, 0);
       logDebug(`[background] Reset batch count for tab ${sender.tab.id}`);
     }
+  } else if (message.action === 'manualBackup') {
+    // Return the promise to the caller so options.js can await the result
+    return backupManager.performManualBackup();
   }
 });
 
@@ -251,6 +256,25 @@ browser.storage.onChanged.addListener((changes, namespace) => {
     logDebug('Debug mode changed to:', DEBUG);
   }
 });
+
+// Initialize the Backup Manager
+const backupManager = new BackupManager(
+  {
+    backupFolderName: '[Pxv.UF-backups]',
+    addonName: 'Pxv.UF',
+    getDebugState: () => DEBUG,
+    retention: { hourly: 4, daily: 3, weekly: 3, monthly: 3 },
+  },
+  async () => {
+    // Fetch all current storage data
+    const allData = await browser.storage.local.get(null);
+    // Remove the backup manager's internal history state so it's not included in the backup
+    delete allData.backup_manager_state;
+    return allData;
+  },
+);
+
+backupManager.init();
 
 // Load settings after everything else is set up
 loadSettings();
