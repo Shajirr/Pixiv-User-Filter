@@ -47,22 +47,36 @@ export class BackupManager {
   async init() {
     this.#log(`Initializing for ${this.folderName}...`);
 
-    // 1. Listen for the coordinator alarm
+    // Listen for the coordinator alarm
     browser.alarms.onAlarm.addListener((alarm) => {
       if (alarm.name === 'backup_coordinator') {
         this.evaluateBackups();
       }
     });
+  }
 
-    // 2. Create the coordinator alarm to fire every hour
-    const alarm = await browser.alarms.get('backup_coordinator');
-    if (!alarm) {
-      await browser.alarms.create('backup_coordinator', { periodInMinutes: 61 });
+  // Toggles the backup alarm depending on user settings
+  async updateAlarmState(isEnabled) {
+    if (isEnabled) {
+      // Final security check before starting engine
+      const hasPerm = await browser.permissions.contains({ permissions: ['downloads'] });
+      if (!hasPerm) {
+        this.#log('Cannot enable auto-backup: missing downloads permission.');
+        return;
+      }
+
+      const alarm = await browser.alarms.get('backup_coordinator');
+      if (!alarm) {
+        this.#log('Starting auto-backup alarm.');
+        await browser.alarms.create('backup_coordinator', { periodInMinutes: 61 });
+      }
+
+      // Run an evaluation immediately on startup/enable to catch up
+      await this.evaluateBackups();
+    } else {
+      this.#log('Stopping auto-backup alarm.');
+      await browser.alarms.clear('backup_coordinator');
     }
-
-    // 3. Run an evaluation immediately on startup.
-    // This catches up on any backups missed while the browser was closed.
-    await this.evaluateBackups();
   }
 
   // Check if the coordinator alarm is currently running
@@ -77,6 +91,13 @@ export class BackupManager {
   }
 
   async evaluateBackups() {
+    // Failsafe: if the permission was pulled but the alarm hasn't halted yet
+    const hasPerm = await browser.permissions.contains({ permissions: ['downloads'] });
+    if (!hasPerm) {
+      this.#log('Downloads permission missing. Aborting evaluateBackups().');
+      return;
+    }
+
     const now = Date.now();
 
     // Check each type to see if enough time has passed since its last successful run
@@ -94,6 +115,12 @@ export class BackupManager {
   }
 
   async performBackup(type) {
+    // Failsafe before using browser.downloads
+    if (!browser.downloads) {
+      this.#error('browser.downloads API not available. Permission missing.');
+      return false;
+    }
+
     try {
       const rawData = await this.getData();
       const dataString = JSON.stringify(rawData, null, 2);
@@ -150,32 +177,23 @@ export class BackupManager {
     }
   }
 
-  async performManualBackup() {
+  async getManualBackupPayload() {
     try {
+      this.#log('Generating manual backup payload...');
       const rawData = await this.getData();
       const dataString = JSON.stringify(rawData, null, 2);
 
       const dateStr = this.#getFormattedDate();
-      const filename = `${this.rootFolder}/${this.folderName}/[${this.addonName}] manual_${dateStr}.json`;
+      const filename = `[${this.addonName}] manual_${dateStr}.json`;
 
-      const blob = new Blob([dataString], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-
-      this.#log(`Prompting manual backup: ${filename}`);
-      await browser.downloads.download({
-        url: url,
+      return {
+        success: true,
+        content: dataString,
         filename: filename,
-        saveAs: true, // Enforce user choice
-      });
-
-      setTimeout(() => {
-        URL.revokeObjectURL(url);
-      }, 20000);
-
-      return true;
+      };
     } catch (error) {
-      this.#error(`Failed to create manual backup:`, error);
-      return false;
+      this.#error(`Failed to generate manual backup payload:`, error);
+      return { success: false };
     }
   }
 

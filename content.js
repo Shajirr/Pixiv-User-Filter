@@ -12,14 +12,25 @@ let settings = {
   removeSameAuthor: false,
   counterPos: { top: 'auto', bottom: '2%', left: '2%', right: 'auto' },
 };
-let removedCount = 0;
+
+// State management
+const defaultState = {
+  removedCount: 0,
+  currentAuthorId: null,
+  processedLiElements: new WeakMap(),
+  observedContainers: new WeakSet(),
+  recommendationObservers: [],
+  pageContentObserver: null,
+  updateArtworksTimeout: null,
+  lastPathname: window.location.href,
+};
+
+// Clone default state into active appState object
+const appState = { ...defaultState };
+
+let pageContentDebounceTimer = null;
+let refreshDebounceTimer = null;
 let counterElement = null;
-let updateArtworksTimeout = null;
-let recommendationObservers = [];
-let pageContentObserver = null;
-let lastPathname = window.location.href;
-let currentAuthorId = null;
-let processedLiElements = new WeakMap();
 let thumbnailFixerEnabled = false;
 let limitRecommendations = false;
 let maxRecommendations = 90;
@@ -66,11 +77,77 @@ async function loadSettings() {
 }
 
 const selectors = {
+  // User & Profile
   userLink: 'a[data-gtm-user-id], a[href*="/users/"]',
   followButton: 'button[data-gtm-user-id]',
   profileLink: 'section a[data-gtm-value]',
+
+  // Containers & Wrappers
   recommendZone: 'div.gtm-illust-recommend-zone', // Recommendation section
+  discoveryZone: 'div.gtm-illust-recommend-zone[data-gtm-recommend-zone="discovery"]',
+  homeRecommend: 'div[data-ga4-label="home_recommend"]',
+  pageRoot: 'div[data-ga4-label="page_root"]',
+  bgBackground1: '.bg-background1',
+
+  // Grids & Items
+  tagGridCell: 'div.col-span-2',
+  tagGridClass: 'col-span-2',
+  artworkLink: 'a[href*="/artworks/"]',
 };
+
+// Helper: optimized check for new artwork nodes in mutation loops.
+// Avoids deep querySelector scans on every added node.
+function hasNewArtworkNodes(addedNodes, isHomeFeed = false, isGrid = false) {
+  for (const node of addedNodes) {
+    if (node.nodeType !== Node.ELEMENT_NODE) continue;
+
+    const tag = node.tagName;
+
+    // 1. Fast, shallow tag checks
+    if (tag === 'LI' || tag === 'UL') return true;
+
+    // 2. Context-specific shallow checks
+    if (isHomeFeed && tag === 'DIV') return true;
+    if (isGrid && (node.classList?.contains(selectors.tagGridClass) || tag === 'DIV')) return true;
+
+    // 3. Fallback: Only if a large wrapper was injected, check its children.
+    // Restricting querySelector only to DIV/SECTION containers saves massive overhead.
+    if (tag === 'DIV' || tag === 'SECTION') {
+      if (isGrid && node.querySelector(selectors.tagGridCell)) return true;
+      if (!isGrid && node.querySelector('li, ul')) return true;
+    }
+  }
+  return false;
+}
+
+// Helper: Reset extension state for non-filterable pages or navigation
+function resetExtensionState() {
+  logDebug('[resetExtensionState] Resetting state and hiding UI');
+
+  // Clear pending retry timeouts to avoid race conditions on navigation
+  if (appState.updateArtworksTimeout) {
+    clearTimeout(appState.updateArtworksTimeout);
+    appState.updateArtworksTimeout = null;
+  }
+
+  // Disconnect and purge active observers to prevent zombie background leaks
+  appState.recommendationObservers.forEach((observer) => observer.disconnect());
+  appState.recommendationObservers = [];
+
+  if (appState.pageContentObserver) {
+    appState.pageContentObserver.disconnect();
+    appState.pageContentObserver = null;
+  }
+
+  appState.removedCount = 0;
+  appState.currentAuthorId = null;
+  updateCounter(); // This naturally hides the counter because isFilterablePage() handles display logic
+
+  if (document.visibilityState === 'visible') {
+    browser.runtime.sendMessage({ action: 'setBadge', count: 0 });
+    logDebug('[resetExtensionState] Reset badge to 0 (tab is visible)');
+  }
+}
 
 function updateCounter() {
   try {
@@ -84,15 +161,15 @@ function updateCounter() {
     }
 
     if (counterElement) {
-      counterElement.textContent = `Removed: ${removedCount}`;
+      counterElement.textContent = `Removed: ${appState.removedCount}`;
       // Hide counter if it's a non-filterable page, show if filterable
       counterElement.style.display = isFilterablePage() ? 'flex' : 'none';
-      logDebug(`[updateCounter] Updated floating counter: Removed: ${removedCount}`);
+      logDebug(`[updateCounter] Updated floating counter: Removed: ${appState.removedCount}`);
     }
 
     if (document.visibilityState === 'visible') {
-      browser.runtime.sendMessage({ action: 'setBadge', count: removedCount });
-      logDebug(`[updateCounter] Updated badge with count: ${removedCount} (tab is visible)`);
+      browser.runtime.sendMessage({ action: 'setBadge', count: appState.removedCount });
+      logDebug(`[updateCounter] Updated badge with count: ${appState.removedCount} (tab is visible)`);
     } else {
       logDebug(`[updateCounter] Skipped badge update (tab is not visible)`);
     }
@@ -106,7 +183,7 @@ function findArtworkGridsByContent() {
   const candidates = [];
 
   for (const ul of allULs) {
-    const artworkLinks = ul.querySelectorAll('a[href*="/artworks/"]');
+    const artworkLinks = ul.querySelectorAll(selectors.artworkLink);
     const hasImages = ul.querySelector('li img');
 
     // // Only need the links to perform filtering; images might load later.
@@ -123,15 +200,15 @@ function findArtworkGridsByContent() {
 
 function findTagPageGrids() {
   // Tag pages use a CSS grid of div.col-span-2 cells (no ul/li structure)
-  const firstLink = document.querySelector('div.col-span-2 a[href*="/artworks/"]');
+  const firstLink = document.querySelector(`${selectors.tagGridCell} ${selectors.artworkLink}`);
   if (!firstLink) return [];
   let cell = firstLink;
-  while (cell && !cell.classList.contains('col-span-2')) {
+  while (cell && !cell.classList.contains(selectors.tagGridClass)) {
     cell = cell.parentElement;
   }
   if (!cell || !cell.parentElement) return [];
   const gridContainer = cell.parentElement;
-  const cells = gridContainer.querySelectorAll('div.col-span-2');
+  const cells = gridContainer.querySelectorAll(selectors.tagGridCell);
   if (cells.length === 0) return [];
   logDebug(`[findTagPageGrids] Found grid container with ${cells.length} cell(s)`);
   return [gridContainer];
@@ -141,14 +218,14 @@ function findHomePageFeed() {
   const containers = [];
 
   // 1. Top showcase / horizontal scrolling lists before the main feed
-  const page_root = document.querySelector('div[data-ga4-label="page_root"]');
+  const page_root = document.querySelector(selectors.pageRoot);
   if (page_root) {
     logDebug(`[findHomePageFeed] Found page_root container with ${page_root.children.length} items`);
 
     const uls = page_root.querySelectorAll('ul');
     for (const ul of uls) {
       // Verify that the UL contains artwork links
-      if (ul.querySelector('li a[href*="/artworks/"]')) {
+      if (ul.querySelector(`li ${selectors.artworkLink}`)) {
         containers.push(ul);
         logDebug(`[findHomePageFeed] Found page_root UL container with ${ul.children.length} items`);
       }
@@ -157,7 +234,7 @@ function findHomePageFeed() {
 
   // 2. The main infinite scroll feed container (div[data-ga4-label="home_recommend"])
   // Individual feed items are direct div children
-  const mainFeed = document.querySelector('div[data-ga4-label="home_recommend"]');
+  const mainFeed = document.querySelector(selectors.homeRecommend);
   if (mainFeed) {
     containers.push(mainFeed);
     logDebug('[findHomePageFeed] Found main home_recommend container');
@@ -169,9 +246,9 @@ function findHomePageFeed() {
 function findDiscoveryFeed() {
   // Discovery page uses div.gtm-illust-recommend-zone[data-gtm-recommend-zone="discovery"] as the outer wrapper.
   // Inside, each <ul> contains direct <li> children — these are the individual items to filter.
-  const zone = document.querySelector('div.gtm-illust-recommend-zone[data-gtm-recommend-zone="discovery"]');
+  const zone = document.querySelector(selectors.discoveryZone);
   if (!zone) return [];
-  const uls = [...zone.querySelectorAll('ul')].filter((ul) => ul.querySelector('li a[href*="/artworks/"]'));
+  const uls = [...zone.querySelectorAll('ul')].filter((ul) => ul.querySelector(`li ${selectors.artworkLink}`));
   logDebug(`[findDiscoveryFeed] Found ${uls.length} UL row(s) in discovery zone`);
   return uls;
 }
@@ -182,7 +259,7 @@ function findLazyLoadGrids() {
   // image-presence check from findArtworkGridsByContent.
   const candidates = [];
   for (const ul of document.querySelectorAll('ul')) {
-    const directArtworkLinks = ul.querySelectorAll(':scope > li a[href*="/artworks/"]');
+    const directArtworkLinks = ul.querySelectorAll(`:scope > li ${selectors.artworkLink}`);
     if (directArtworkLinks.length >= 3) {
       candidates.push(ul);
       logDebug(`[findLazyLoadGrids] Candidate with ${directArtworkLinks.length} artwork links`, ul);
@@ -217,7 +294,7 @@ function getArtworkGridContainers() {
     const gtmContainer = document.querySelector(selectors.recommendZone);
     if (gtmContainer) {
       const ul = gtmContainer.querySelector('ul');
-      if (ul && ul.querySelector('li a[href*="/artworks/"]')) {
+      if (ul && ul.querySelector(`li ${selectors.artworkLink}`)) {
         grids.push(ul);
         logDebug('[getArtworkGridContainers] Found grid via gtm-illust-recommend-zone');
       }
@@ -250,12 +327,18 @@ function getArtworkGridContainers() {
 function updateAllArtworks(attempt = 1, maxAttempts = 3) {
   try {
     // Cancel any pending fallback retries if this function is called again
-    if (updateArtworksTimeout) {
-      clearTimeout(updateArtworksTimeout);
-      updateArtworksTimeout = null;
+    if (appState.updateArtworksTimeout) {
+      clearTimeout(appState.updateArtworksTimeout);
+      appState.updateArtworksTimeout = null;
     }
 
     logDebug('[updateAllArtworks] Starting artwork update');
+
+    // Determine context for "removeSameAuthor" dynamically
+    const pageType = getPageType();
+    const isArtworkPage = pageType === 'artwork';
+    const shouldRemoveAuthor = settings.removeSameAuthor && isArtworkPage;
+
     const containers = getArtworkGridContainers();
     let totalProcessed = 0;
     let totalBlocked = 0;
@@ -266,11 +349,6 @@ function updateAllArtworks(attempt = 1, maxAttempts = 3) {
     const elementsToShow = [];
 
     containers.forEach((container) => {
-      // const pageType = getPageType();
-      // const isArtworkPage = pageType === 'artwork';
-      //// Tag pages use div.col-span-2 cells; artwork pages use li elements
-      //const items = isArtworkPage ? container.querySelectorAll('li') : container.querySelectorAll('div.col-span-2');
-
       // Explicitly choose the correct child selector based on the actual container type
       let items;
       if (container.tagName === 'UL') {
@@ -283,15 +361,15 @@ function updateAllArtworks(attempt = 1, maxAttempts = 3) {
         logDebug(`[updateAllArtworks] Home feed container -> using ':scope > div' selector (${items.length} items)`);
       } else {
         // Newer tag pages use div.col-span-2 grid
-        items = container.querySelectorAll('div.col-span-2');
-        logDebug(`[updateAllArtworks] Grid container -> using 'div.col-span-2' selector (${items.length} items)`);
+        items = container.querySelectorAll(selectors.tagGridCell);
+        logDebug(`[updateAllArtworks] Grid container -> using tagGridCell selector (${items.length} items)`);
       }
 
       totalProcessed += items.length;
 
       items.forEach((item) => {
         // item = <li> OR <div class="col-span-2">
-        const result = processLi(item, settings.blacklist, currentAuthorId, settings.removeSameAuthor);
+        const result = processLi(item, settings.blacklist, appState.currentAuthorId, shouldRemoveAuthor);
         const { shouldBlock, alreadyProcessed } = result;
 
         if (shouldBlock) {
@@ -319,11 +397,11 @@ function updateAllArtworks(attempt = 1, maxAttempts = 3) {
 
     if (totalProcessed === 0 && attempt < maxAttempts) {
       logDebug(`[updateAllArtworks] No items found, retrying attempt ${attempt}/${maxAttempts}`);
-      updateArtworksTimeout = setTimeout(() => updateAllArtworks(attempt + 1, maxAttempts), 1000);
+      appState.updateArtworksTimeout = setTimeout(() => updateAllArtworks(attempt + 1, maxAttempts), 1000);
       return;
     }
 
-    removedCount = totalBlocked;
+    appState.removedCount = totalBlocked;
     logDebug(
       `[updateAllArtworks] Processed ${totalProcessed} items (${newlyProcessed} new), blocked ${totalBlocked} total`,
     );
@@ -338,14 +416,17 @@ function makeDraggable(el) {
     pos2 = 0,
     pos3 = 0,
     pos4 = 0;
-  el.onmousedown = dragMouseDown;
+
+  el.addEventListener('mousedown', dragMouseDown);
 
   function dragMouseDown(e) {
     e.preventDefault();
     pos3 = e.clientX;
     pos4 = e.clientY;
-    document.onmouseup = closeDragElement;
-    document.onmousemove = elementDrag;
+
+    // Attach document listeners safely
+    document.addEventListener('mouseup', closeDragElement);
+    document.addEventListener('mousemove', elementDrag);
     el.style.cursor = 'grabbing';
   }
 
@@ -371,8 +452,9 @@ function makeDraggable(el) {
   }
 
   function closeDragElement() {
-    document.onmouseup = null;
-    document.onmousemove = null;
+    // Safely remove the specific listeners to prevent memory leaks and ghost dragging
+    document.removeEventListener('mouseup', closeDragElement);
+    document.removeEventListener('mousemove', elementDrag);
     el.style.cursor = 'grab';
 
     // Use clientWidth/Height (excludes scrollbars) for accurate percentage math
@@ -438,7 +520,7 @@ function createCounter() {
     whiteSpace: 'nowrap',
   });
 
-  counterElement.textContent = `Removed: ${removedCount}`;
+  counterElement.textContent = `Removed: ${appState.removedCount}`;
   document.body.appendChild(counterElement);
   makeDraggable(counterElement);
 }
@@ -480,10 +562,10 @@ function getPageAuthorId(attempt = 1, maxAttempts = 5) {
 
 function processLi(li, blacklist, authorId, removeSameAuthor) {
   // Skip if already processed
-  if (processedLiElements.has(li)) {
+  if (appState.processedLiElements.has(li)) {
     return {
       userId: null,
-      shouldBlock: processedLiElements.get(li), // Return the stored result
+      shouldBlock: appState.processedLiElements.get(li), // Return the stored result
       alreadyProcessed: true,
     };
   }
@@ -493,7 +575,7 @@ function processLi(li, blacklist, authorId, removeSameAuthor) {
   try {
     const userLink = li.querySelector(selectors.userLink);
     if (!userLink) {
-      processedLiElements.set(li, false); // Store verdict
+      appState.processedLiElements.set(li, false); // Store verdict
       return { userId: null, shouldBlock: false, alreadyProcessed: false };
     }
 
@@ -505,7 +587,7 @@ function processLi(li, blacklist, authorId, removeSameAuthor) {
 
     // Early return if no userId found
     if (!userId) {
-      processedLiElements.set(li, false);
+      appState.processedLiElements.set(li, false);
       console.error('[processLi] Error: no userId found for ', li);
       return { userId: null, shouldBlock: false, alreadyProcessed: false };
     }
@@ -518,27 +600,12 @@ function processLi(li, blacklist, authorId, removeSameAuthor) {
     }
 
     // Store the verdict in the Map
-    processedLiElements.set(li, shouldBlock);
+    appState.processedLiElements.set(li, shouldBlock);
   } catch (error) {
     console.error('[processLi] Error:', error);
-    processedLiElements.set(li, false); // Mark as processed even on error
+    appState.processedLiElements.set(li, false); // Mark as processed even on error
   }
   return { userId, shouldBlock, alreadyProcessed: false };
-}
-
-function processArtworks(blacklist, authorId, removeSameAuthor) {
-  try {
-    logDebug('[processArtworks] Starting artwork processing');
-    logDebug(`[processArtworks] Blacklist contains ${blacklist.size} user IDs`);
-    logDebug(`[processArtworks] Author ID: ${authorId}, removeSameAuthor: ${removeSameAuthor}`);
-
-    settings.blacklist = blacklist;
-    currentAuthorId = authorId;
-    settings.removeSameAuthor = removeSameAuthor;
-    updateAllArtworks();
-  } catch (error) {
-    console.error('[processArtworks] Error:', error);
-  }
 }
 
 function getPageType() {
@@ -628,43 +695,32 @@ function waitForRecommendationGrid() {
 
   // Watch the body for structural changes (like the scroll-triggered injection)
   observer.observe(document.body, { childList: true, subtree: true });
-  recommendationObservers.push(observer);
+  appState.recommendationObservers.push(observer);
   logDebug(
-    `[waitForRecommendationGrid] Watching for recommendation artwork grids grid on ${pageType} page: ${window.location.pathname}`,
+    `[waitForRecommendationGrid] Watching for recommendation artwork grids on ${pageType} page: ${window.location.pathname}`,
   );
 }
 
+// Targeted debounced function for new items only for setupArtworkObserver
+const debouncedProcessNewItems = debounce(() => {
+  logDebug('[setupArtworkObserver] Processing new items');
+  updateAllArtworks();
+}, 300);
+
 function setupArtworkObserver() {
   try {
-    recommendationObservers.forEach((observer) => observer.disconnect());
-    recommendationObservers = [];
-    logDebug('[setupArtworkObserver] Cleared previous observers');
-
     const containers = getArtworkGridContainers();
-    logDebug(`[setupArtworkObserver] Setting up observers for ${containers.length} grid containers`);
-
-    // More targeted debounced function for new items only
-    let isProcessing = false;
-    const debouncedProcessNewItems = debounce(() => {
-      if (isProcessing) {
-        logDebug('[setupArtworkObserver] Already processing, skipping');
-        return;
-      }
-      isProcessing = true;
-      logDebug('[setupArtworkObserver] Processing potentially new items');
-      updateAllArtworks();
-      // Reset flag after a short delay
-      setTimeout(() => {
-        isProcessing = false;
-      }, 100);
-    }, 300);
+    let newlyObservedCount = 0;
 
     containers.forEach((container, index) => {
-      logDebug(
-        `[setupArtworkObserver] Setting up observer for container[${index}]: ${container.outerHTML.substring(0, 200)}...`,
-      );
-      // Home feed items are direct div children; other grids use li elements
+      // Only attach to containers which haven't been seen yet.
+      if (appState.observedContainers.has(container)) return;
+
+      logDebug(`[setupArtworkObserver] Setting up observer for new container[${index}]`);
+      appState.observedContainers.add(container);
+
       const isHomeContainer = container.dataset?.ga4Label === 'home_recommend';
+
       const observer = new MutationObserver((mutations) => {
         // Only trigger if new elements were actually added
         let hasNewElements = false;
@@ -672,19 +728,10 @@ function setupArtworkObserver() {
         // More efficient mutation checking
         for (const mutation of mutations) {
           if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
-            for (const node of mutation.addedNodes) {
-              if (node.nodeType === Node.ELEMENT_NODE) {
-                if (
-                  node.tagName === 'LI' ||
-                  node.querySelector?.('li') ||
-                  (isHomeContainer && node.tagName === 'DIV')
-                ) {
-                  hasNewElements = true;
-                  break;
-                }
-              }
+            if (hasNewArtworkNodes(mutation.addedNodes, isHomeContainer, false)) {
+              hasNewElements = true;
+              break;
             }
-            if (hasNewElements) break;
           }
         }
 
@@ -693,16 +740,22 @@ function setupArtworkObserver() {
           debouncedProcessNewItems();
         }
       });
+
       observer.observe(container, { childList: true });
-      recommendationObservers.push(observer);
+      appState.recommendationObservers.push(observer);
+      newlyObservedCount++;
     });
+
+    if (newlyObservedCount > 0) {
+      logDebug(`[setupArtworkObserver] Added ${newlyObservedCount} new container observers`);
+    }
   } catch (error) {
     console.error('[setupArtworkObserver] Error:', error);
   }
 }
 
 function waitForHomeContainers(attempt = 1) {
-  const bg1 = document.querySelector('.bg-background1');
+  const bg1 = document.querySelector(selectors.bgBackground1);
 
   // If the wrapper isn't rendered yet, retry a few times
   if (!bg1) {
@@ -711,13 +764,13 @@ function waitForHomeContainers(attempt = 1) {
   }
 
   // If the containers are already populated, don't need to wait
-  if (bg1.querySelector('ul li a[href*="/artworks/"]')) return;
+  if (bg1.querySelector(`ul li ${selectors.artworkLink}`)) return;
 
   logDebug('[waitForHomeContainers] Watching bg-background1 for late containers...');
 
   const observer = new MutationObserver((mutations, obs) => {
     // Wait until the ULs actually contain artwork links
-    if (bg1.querySelector('ul li a[href*="/artworks/"]')) {
+    if (bg1.querySelector(`ul li ${selectors.artworkLink}`)) {
       logDebug('[waitForHomeContainers] Containers populated! Self-destructing observer.');
       obs.disconnect(); // Kill this observer permanently
 
@@ -732,9 +785,9 @@ function waitForHomeContainers(attempt = 1) {
 }
 
 function setupPageContentObserver() {
-  if (pageContentObserver) {
-    pageContentObserver.disconnect();
-    pageContentObserver = null;
+  if (appState.pageContentObserver) {
+    appState.pageContentObserver.disconnect();
+    appState.pageContentObserver = null;
   }
 
   const pageType = getPageType();
@@ -742,162 +795,89 @@ function setupPageContentObserver() {
   // Base tag pages (tag-base) have no infinite loading -> skip observer
   if (!['tag', 'tag-search', 'illustration', 'manga', 'discovery'].includes(pageType)) return;
 
-  // Discovery page: watch the recommend zone for new <ul> rows injected on scroll
+  let targetContainer = document.body;
+  let checkIsGrid = false;
+
+  // 1. Determine the target container and grid style based on page type
   if (pageType === 'discovery') {
-    const zone = document.querySelector('div.gtm-illust-recommend-zone[data-gtm-recommend-zone="discovery"]');
-    if (!zone) {
+    targetContainer = document.querySelector(selectors.discoveryZone);
+    if (!targetContainer) {
       logDebug('[pageContentObserver] Discovery zone not found yet -> retrying in 800ms');
       setTimeout(setupPageContentObserver, 800);
       return;
     }
-
-    pageContentObserver = new MutationObserver((mutations) => {
-      // Detect new <ul> rows or <li> items injected by scroll
-      let hasNewContent = false;
-      for (const mutation of mutations) {
-        if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
-          for (const node of mutation.addedNodes) {
-            if (
-              node.nodeType === Node.ELEMENT_NODE &&
-              (node.tagName === 'UL' ||
-                node.tagName === 'LI' ||
-                node.querySelector?.('ul') ||
-                node.querySelector?.('li'))
-            ) {
-              hasNewContent = true;
-              break;
-            }
-          }
-          if (hasNewContent) break;
-        }
-      }
-
-      if (hasNewContent) {
-        logDebug('[pageContentObserver] New scroll content detected on discovery page -> updating');
-        if (window._pixivDebounce) clearTimeout(window._pixivDebounce);
-        window._pixivDebounce = setTimeout(() => {
-          setupArtworkObserver(); // Attach observers to newly spawned UL rows
-          updateAllArtworks(); // Process the new items (WeakMap will skip old ones)
-        }, 300);
-      }
-    });
-
-    pageContentObserver.observe(zone, { childList: true, subtree: true });
-    logDebug('[pageContentObserver] Attached to discovery zone for scroll detection');
-    return;
-  }
-
-  // illustration and manga: multiple <ul> containers load on scroll, no stable single parent
-  // -> watch document.body for new <ul>/<li> nodes being injected
-  if (pageType === 'illustration' || pageType === 'manga') {
-    const grids = findArtworkGridsByContent();
+  } else if (pageType === 'tag' || pageType === 'tag-search') {
+    // tag and tag-search pages: find the grid and watch its stable parent for pagination
+    let grids = findTagPageGrids();
+    if (grids.length === 0) {
+      logDebug('[pageContentObserver] No col-span-2 grid, checking for ul/li fallback');
+      grids = findArtworkGridsByContent();
+    }
+    if (grids.length === 0) {
+      logDebug('[pageContentObserver] Grid not found yet -> retrying in 800ms');
+      setTimeout(setupPageContentObserver, 800);
+      return;
+    }
+    // Go up 1–2 levels to a stable parent that survives pagination (the grid itself gets replaced)
+    targetContainer = grids[0].parentElement || grids[0];
+    if (targetContainer.children.length < 5) {
+      targetContainer = targetContainer.parentElement || targetContainer;
+    }
+    checkIsGrid = true;
+  } else if (pageType === 'illustration' || pageType === 'manga') {
+    let grids = findArtworkGridsByContent();
     if (grids.length === 0) {
       logDebug(`[pageContentObserver] No grids found yet on ${pageType} page -> retrying in 800ms`);
       setTimeout(setupPageContentObserver, 800);
       return;
     }
-
-    pageContentObserver = new MutationObserver((mutations) => {
-      // Detect new <ul> containers or <li> items injected by scroll
-      let hasNewContent = false;
-      for (const mutation of mutations) {
-        if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
-          for (const node of mutation.addedNodes) {
-            if (
-              node.nodeType === Node.ELEMENT_NODE &&
-              (node.tagName === 'LI' ||
-                node.tagName === 'UL' ||
-                node.querySelector?.('li') ||
-                node.querySelector?.('ul'))
-            ) {
-              hasNewContent = true;
-              break;
-            }
-          }
-          if (hasNewContent) break;
-        }
-      }
-
-      if (hasNewContent) {
-        logDebug(`[pageContentObserver] New scroll content detected on ${pageType} page -> updating`);
-        if (window._pixivDebounce) clearTimeout(window._pixivDebounce);
-        window._pixivDebounce = setTimeout(() => {
-          setupArtworkObserver(); // Attach observers to newly spawned grids
-          updateAllArtworks(); // Process the items (WeakMap will skip old ones)
-        }, 300);
-      }
-    });
-
-    pageContentObserver.observe(document.body, { childList: true, subtree: true });
-    logDebug(`[pageContentObserver] Attached to document.body for ${pageType} scroll detection`);
-    return;
+    // Keep targetContainer as document.body
   }
 
-  // tag and tag-search pages: find the grid and watch its stable parent for pagination
-  let grids = findTagPageGrids();
-  if (grids.length === 0) {
-    logDebug('[pageContentObserver] No col-span-2 grid, checking for ul/li (base tag pages)');
-    grids = findArtworkGridsByContent();
-  }
-
-  if (grids.length === 0) {
-    logDebug('[pageContentObserver] Grid not found yet -> retrying in 800ms');
-    setTimeout(setupPageContentObserver, 800);
-    return;
-  }
-
-  const gridContainer = grids[0];
-
-  // Go up 1–2 levels to a parent that survives pagination (the grid itself gets replaced)
-  let targetContainer = gridContainer.parentElement || gridContainer;
-  if (targetContainer.children.length < 5) {
-    targetContainer = targetContainer.parentElement || targetContainer;
-  }
-
-  pageContentObserver = new MutationObserver((mutations) => {
-    // Detect both new col-span-2 cells and new <li> elements
-    let hasNewArtworkCells = false;
+  // 2. Attach a unified, optimized observer
+  appState.pageContentObserver = new MutationObserver((mutations) => {
+    let hasNewContent = false;
+    // Detect new <ul> rows or <li> items injected by scroll
     for (const mutation of mutations) {
       if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
-        for (const node of mutation.addedNodes) {
-          if (
-            node.nodeType === Node.ELEMENT_NODE &&
-            (node.classList?.contains('col-span-2') ||
-              node.querySelector?.('div.col-span-2') ||
-              node.tagName === 'LI' ||
-              node.querySelector?.('li'))
-          ) {
-            hasNewArtworkCells = true;
-            break;
-          }
+        // Use the optimized helper
+        if (hasNewArtworkNodes(mutation.addedNodes, false, checkIsGrid)) {
+          hasNewContent = true;
+          break;
         }
-        if (hasNewArtworkCells) break;
       }
-      if (hasNewArtworkCells) break;
     }
 
-    if (hasNewArtworkCells) {
-      logDebug('[pageContentObserver] Real pagination detected (new cells added) -> refreshing');
-      if (window._pixivDebounce) clearTimeout(window._pixivDebounce);
-      window._pixivDebounce = setTimeout(() => {
-        refreshArtworks(true);
+    if (hasNewContent) {
+      logDebug(`[pageContentObserver] New scroll/pagination content detected on ${pageType} -> updating`);
+      if (pageContentDebounceTimer) clearTimeout(pageContentDebounceTimer);
+      pageContentDebounceTimer = setTimeout(() => {
+        if (checkIsGrid) {
+          refreshArtworks(true); // Pagination
+        } else {
+          setupArtworkObserver(); // Attach observers to newly spawned grids
+          updateAllArtworks(); // Process the items (WeakMap will skip old ones)
+        }
       }, 300);
     }
   });
 
-  pageContentObserver.observe(targetContainer, { childList: true, subtree: true });
-
-  logDebug(
-    `[pageContentObserver] Attached to stable parent of grid (${targetContainer.tagName}, ${targetContainer.children.length} children)`,
-  );
+  appState.pageContentObserver.observe(targetContainer, { childList: true, subtree: true });
+  logDebug(`[pageContentObserver] Attached to ${pageType} target container`);
 }
 
 function refreshArtworks(isPagination = false) {
   try {
-    if (window._pixivRefreshDebounce) {
-      clearTimeout(window._pixivRefreshDebounce);
+    if (refreshDebounceTimer) {
+      clearTimeout(refreshDebounceTimer);
     }
-    window._pixivRefreshDebounce = setTimeout(() => {
+    // Clear retry fallback timer to avoid overlap
+    if (appState.updateArtworksTimeout) {
+      clearTimeout(appState.updateArtworksTimeout);
+      appState.updateArtworksTimeout = null;
+    }
+
+    refreshDebounceTimer = setTimeout(() => {
       logDebug(`[refreshArtworks] Refreshing artworks (debounced, isPagination=${isPagination})`);
 
       // Return if the page is not filterable
@@ -905,20 +885,19 @@ function refreshArtworks(isPagination = false) {
 
       // Clear processed elements cache when blacklist changes, not on pagination
       if (!isPagination) {
-        processedLiElements = new WeakMap();
+        appState.processedLiElements = new WeakMap();
         logDebug('[refreshArtworks] Cleared processed elements cache');
+        appState.observedContainers = new WeakSet();
       }
 
-      removedCount = 0; // Reset for all pages during blacklist update
-      logDebug('[refreshArtworks] Reset removedCount to 0 for blacklist update');
+      appState.removedCount = 0; // Reset for all pages during blacklist update
+      logDebug('[refreshArtworks] Reset appState.removedCount to 0 for blacklist update');
 
-      recommendationObservers.forEach((observer) => observer.disconnect());
-      recommendationObservers = [];
+      appState.recommendationObservers.forEach((observer) => observer.disconnect());
+      appState.recommendationObservers = [];
       logDebug('[refreshArtworks] Disconnected previous artwork observers');
 
-      // Process artworks immediately without waiting for counter
-      processArtworks(settings.blacklist, currentAuthorId, settings.removeSameAuthor);
-
+      updateAllArtworks();
       setupArtworkObserver();
 
       // Ensure counter exists and reflects the latest state
@@ -933,17 +912,23 @@ function updatePage() {
   try {
     logDebug('[updatePage] Updating page for URL:', window.location.pathname);
 
-    // Reset processed elements verdicts on page change
-    processedLiElements = new WeakMap();
-    logDebug('[updatePage] Cleared processed elements cache for new page');
+    // Clear active fallback retry timeouts to eliminate zombie race conditions
+    if (appState.updateArtworksTimeout) {
+      clearTimeout(appState.updateArtworksTimeout);
+      appState.updateArtworksTimeout = null;
+    }
 
-    recommendationObservers.forEach((observer) => observer.disconnect());
-    recommendationObservers = [];
+    appState.processedLiElements = new WeakMap();
+    logDebug('[updatePage] Cleared processed elements cache for new page');
+    appState.observedContainers = new WeakSet(); // Clear cache of observed containers
+
+    appState.recommendationObservers.forEach((observer) => observer.disconnect());
+    appState.recommendationObservers = [];
     logDebug('[updatePage] Disconnected previous recommendation observers');
 
     const pageType = getPageType();
 
-    if (isFilterablePage()) {
+    if (pageType) {
       logDebug(`[updatePage] Filterable page detected: ${pageType}, processing`);
 
       const isArtworkPage = pageType === 'artwork';
@@ -956,11 +941,12 @@ function updatePage() {
 
       authorPromise
         .then((authorId) => {
-          currentAuthorId = authorId;
+          appState.currentAuthorId = authorId;
           logDebug(`[updatePage] Final author ID: ${authorId}`);
-          removedCount = 0;
+          appState.removedCount = 0;
 
-          processArtworks(settings.blacklist, currentAuthorId, settings.removeSameAuthor && isArtworkPage);
+          updateAllArtworks();
+
           if (isArtworkPage) {
             waitForRecommendationGrid(); // only wait on artwork pages
           } else {
@@ -980,13 +966,7 @@ function updatePage() {
       setupPageContentObserver();
     } else {
       logDebug('[updatePage] Non-filterable page, skipping recommendation processing');
-      removedCount = 0;
-      currentAuthorId = null;
-      updateCounter(); // Hide the counter
-      if (document.visibilityState === 'visible') {
-        browser.runtime.sendMessage({ action: 'setBadge', count: 0 });
-        logDebug('[updatePage] Non-filterable page, reset badge to 0 (tab is visible)');
-      }
+      resetExtensionState();
     }
   } catch (error) {
     console.error('[updatePage] Error:', error);
@@ -1006,13 +986,7 @@ async function main() {
       updatePage();
     } else {
       logDebug('[main] Non-filterable page, skipping user filtering');
-      removedCount = 0;
-      currentAuthorId = null;
-      updateCounter(); // Hide the counter
-      if (document.visibilityState === 'visible') {
-        await browser.runtime.sendMessage({ action: 'setBadge', count: 0 });
-        logDebug('[main] Non-filterable page, reset badge to 0 (tab is visible)');
-      }
+      resetExtensionState();
     }
 
     browser.runtime.onMessage.addListener((message) => {
@@ -1031,9 +1005,9 @@ async function main() {
 
     // Function to check if the URL has changed
     const checkUrlChange = () => {
-      if (window.location.href !== lastPathname) {
-        logDebug('[main] URL change detected from:', lastPathname, 'to', window.location.href);
-        lastPathname = window.location.href;
+      if (window.location.href !== appState.lastPathname) {
+        logDebug('[main] URL change detected from:', appState.lastPathname, 'to', window.location.href);
+        appState.lastPathname = window.location.href;
 
         // Reinitialize thumbnail fixer on navigation
         ThumbnailFixer.setEnabled(thumbnailFixerEnabled);
@@ -1042,13 +1016,7 @@ async function main() {
           updatePage();
         } else {
           logDebug('[main] Non-filterable page, resetting badge');
-          removedCount = 0;
-          currentAuthorId = null;
-          updateCounter(); // Hide the counter
-          if (document.visibilityState === 'visible') {
-            browser.runtime.sendMessage({ action: 'setBadge', count: 0 });
-            logDebug('[main] Non-filterable page, reset badge to 0 (tab is visible)');
-          }
+          resetExtensionState();
         }
       }
     };
@@ -1057,7 +1025,7 @@ async function main() {
     window.addEventListener('popstate', checkUrlChange);
 
     window.addEventListener('unload', () => {
-      if (pageContentObserver) pageContentObserver.disconnect();
+      if (appState.pageContentObserver) appState.pageContentObserver.disconnect();
     });
 
     const titleObserver = new MutationObserver(() => {
@@ -1068,13 +1036,7 @@ async function main() {
         updatePage();
       } else {
         logDebug('[titleObserver] Non-filterable page, resetting badge');
-        removedCount = 0;
-        currentAuthorId = null;
-        updateCounter(); // Hide the counter
-        if (document.visibilityState === 'visible') {
-          browser.runtime.sendMessage({ action: 'setBadge', count: 0 });
-          logDebug('[titleObserver] Non-filterable page, reset badge to 0 (tab is visible)');
-        }
+        resetExtensionState();
       }
     });
 
@@ -1084,7 +1046,7 @@ async function main() {
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
         logDebug('[main] Tab became visible, updating badge');
-        browser.runtime.sendMessage({ action: 'setBadge', count: removedCount });
+        browser.runtime.sendMessage({ action: 'setBadge', count: appState.removedCount });
       }
     });
 

@@ -20,9 +20,10 @@
     "activeTab",
     "webRequest",
     "webRequestBlocking",
-    "downloads",
     "alarms"
   ],
+
+  "optional_permissions": ["downloads"],
 
   "host_permissions": ["*://*.pixiv.net/*"],
 

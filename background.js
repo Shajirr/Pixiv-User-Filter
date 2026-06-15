@@ -11,6 +11,7 @@ const DEFAULT_MAX_RECOMMENDATIONS = 90;
 
 let batchCounts = new Map();
 let settings = { limitRecommendations: false, maxRecommendations: DEFAULT_MAX_RECOMMENDATIONS };
+let autoBackupEnabled = false;
 let webRequestListener = null; // store reference to the listener
 
 async function loadSettings() {
@@ -18,18 +19,23 @@ async function loadSettings() {
     const result = await browser.storage.local.get({
       limitRecommendations: false,
       maxRecommendations: DEFAULT_MAX_RECOMMENDATIONS,
+      autoBackup: false,
       DEBUG: false,
     });
     settings.limitRecommendations = result.limitRecommendations;
     settings.maxRecommendations = result.maxRecommendations;
+    autoBackupEnabled = result.autoBackup;
     DEBUG = result.DEBUG;
 
     logDebug('Debug mode set to:', DEBUG);
     logDebug(
-      `[background] Loaded settings: limitRecommendations=${settings.limitRecommendations}, maxRecommendations=${settings.maxRecommendations}`,
+      `[background] Loaded settings: limitRecommendations=${settings.limitRecommendations}, maxRecommendations=${settings.maxRecommendations}, autoBackup=${autoBackupEnabled}`,
     );
     // Update listener based on settings
     updateWebRequestListener();
+
+    // Propagate state to backup manager
+    await backupManager.updateAlarmState(autoBackupEnabled);
   } catch (error) {
     console.error('[background] Error loading settings:', error);
   }
@@ -222,9 +228,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
       batchCounts.set(sender.tab.id, 0);
       logDebug(`[background] Reset batch count for tab ${sender.tab.id}`);
     }
-  } else if (message.action === 'manualBackup') {
-    // Return the promise to the caller so options.js can await the result
-    return backupManager.performManualBackup();
+  } else if (message.action === 'getManualBackup') {
+    // Return the payload Promise directly to options.js
+    return backupManager.getManualBackupPayload();
   }
 });
 
@@ -249,11 +255,27 @@ browser.action.onClicked.addListener(() => {
   browser.runtime.openOptionsPage();
 });
 
+// Handle global permission revocation
+browser.permissions.onRemoved.addListener((permissions) => {
+  if (permissions.permissions && permissions.permissions.includes('downloads')) {
+    logDebug('[background] Downloads permission revoked. Disabling auto-backup.');
+    // Writing to storage will automatically propagate to options UI and the backupManager
+    browser.storage.local.set({ autoBackup: false });
+  }
+});
+
 // Listen for storage changes
 browser.storage.onChanged.addListener((changes, namespace) => {
-  if (namespace === 'local' && changes.DEBUG) {
-    DEBUG = changes.DEBUG.newValue ?? false;
-    logDebug('Debug mode changed to:', DEBUG);
+  if (namespace === 'local') {
+    if (changes.DEBUG) {
+      DEBUG = changes.DEBUG.newValue ?? false;
+      logDebug('Debug mode changed to:', DEBUG);
+    }
+    if (changes.autoBackup !== undefined) {
+      autoBackupEnabled = changes.autoBackup.newValue ?? false;
+      logDebug('Auto backup state changed to:', autoBackupEnabled);
+      backupManager.updateAlarmState(autoBackupEnabled);
+    }
   }
 });
 

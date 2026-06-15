@@ -54,6 +54,7 @@ function showErrorMessage(validationResult) {
 function showStatusMessage(messageText, isSuccess) {
   const statusMessage = document.getElementById('status-message');
   statusMessage.textContent = messageText;
+  statusMessage.style.color = isSuccess ? '' : 'var(--in-content-error-color, #c93434)';
   statusMessage.classList.add('visible');
   setTimeout(() => {
     statusMessage.classList.remove('visible');
@@ -105,6 +106,7 @@ const form = document.getElementById('options-form');
 const exportButton = document.getElementById('exportBlacklist');
 const limitCheckbox = document.getElementById('limitRecommendations');
 const maxRecSlider = document.getElementById('maxRecommendations');
+const autoBackupCheckbox = document.getElementById('autoBackup');
 const debugModeCheckbox = document.getElementById('debugMode');
 const saveBackupBtn = document.getElementById('saveBackup');
 const loadBackupBtn = document.getElementById('loadBackup');
@@ -118,6 +120,29 @@ textarea.addEventListener(
     showErrorMessage(validationResult);
   }, 300),
 );
+
+// Toggle auto-backup functionality and request permissions
+autoBackupCheckbox.addEventListener('change', async (e) => {
+  if (e.target.checked) {
+    try {
+      const granted = await browser.permissions.request({ permissions: ['downloads'] });
+      if (granted) {
+        await browser.storage.local.set({ autoBackup: true });
+        showStatusMessage('Auto-backup enabled', true);
+      } else {
+        e.target.checked = false;
+        await browser.storage.local.set({ autoBackup: false });
+        showStatusMessage('Permission denied. Auto-backup disabled.', false);
+      }
+    } catch (err) {
+      console.error('Permission request error:', err);
+      e.target.checked = false;
+    }
+  } else {
+    await browser.storage.local.set({ autoBackup: false });
+    showStatusMessage('Auto-backup disabled', true);
+  }
+});
 
 form.addEventListener('submit', (e) => {
   e.preventDefault();
@@ -150,15 +175,36 @@ form.addEventListener('submit', (e) => {
 
 exportButton.addEventListener('click', exportBlacklist);
 
-saveBackupBtn.addEventListener('click', () => {
-  showStatusMessage('Creating backup...', false);
-  browser.runtime.sendMessage({ action: 'manualBackup' }).then((success) => {
-    if (success) {
-      showStatusMessage('Backup saved successfully', false);
+saveBackupBtn.addEventListener('click', async () => {
+  try {
+    showStatusMessage('Creating backup...', true);
+
+    // Request the backup payload from the BackupManager module
+    const payload = await browser.runtime.sendMessage({ action: 'getManualBackup' });
+
+    if (payload && payload.success) {
+      // Create a Blob from the formatted content provided by the module
+      const blob = new Blob([payload.content], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+
+      // Use the DOM to trigger the download (requires no permissions)
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = payload.filename; // Standardized filename from module
+
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      showStatusMessage('Backup saved successfully', true);
     } else {
-      showStatusMessage('Backup either cancelled or failed', true);
+      showStatusMessage('Backup failed to generate', false);
     }
-  });
+  } catch (error) {
+    console.error('Manual backup error:', error);
+    showStatusMessage('Backup failed', false);
+  }
 });
 
 loadBackupBtn.addEventListener('click', () => {
@@ -219,9 +265,10 @@ browser.storage.local
     thumbnailFixer: false,
     limitRecommendations: false,
     maxRecommendations: DEFAULT_MAX_RECOMMENDATIONS,
+    autoBackup: false,
     DEBUG: false,
   })
-  .then((result) => {
+  .then(async (result) => {
     DEBUG = result.DEBUG;
     logDebug('Debug mode set to:', DEBUG);
     debugModeCheckbox.checked = DEBUG;
@@ -230,6 +277,17 @@ browser.storage.local
     document.getElementById('thumbnailFixer').checked = result.thumbnailFixer;
     limitCheckbox.checked = result.limitRecommendations;
     maxRecSlider.value = result.maxRecommendations;
+
+    // Verify permissions for auto-backup visually
+    const hasPerm = await browser.permissions.contains({ permissions: ['downloads'] });
+    if (result.autoBackup && !hasPerm) {
+      // Permission was revoked in browser settings while extension was inactive
+      await browser.storage.local.set({ autoBackup: false });
+      autoBackupCheckbox.checked = false;
+    } else {
+      autoBackupCheckbox.checked = result.autoBackup;
+    }
+
     updateMaxRecValue(maxRecSlider.value);
     toggleSliderState(limitCheckbox.checked);
     setTextareaHeight();
@@ -239,17 +297,23 @@ browser.storage.local
 
 // Listen for storage changes to keep the options page in sync
 browser.storage.onChanged.addListener((changes, namespace) => {
-  if (namespace === 'local' && changes.blacklist) {
-    const newBlacklist = changes.blacklist.newValue || [];
-    textarea.value = newBlacklist.join('\n');
-    setTextareaHeight();
-    const validationResult = parseBlacklist(textarea.value);
-    showErrorMessage(validationResult);
-    logDebug('Options page: Blacklist updated from storage');
-  }
-  if (namespace === 'local' && changes.DEBUG) {
-    DEBUG = changes.DEBUG.newValue ?? false;
-    logDebug('Debug mode changed to:', DEBUG);
-    debugModeCheckbox.checked = DEBUG;
+  if (namespace === 'local') {
+    if (changes.blacklist) {
+      const newBlacklist = changes.blacklist.newValue || [];
+      textarea.value = newBlacklist.join('\n');
+      setTextareaHeight();
+      const validationResult = parseBlacklist(textarea.value);
+      showErrorMessage(validationResult);
+      logDebug('Options page: Blacklist updated from storage');
+    }
+    if (changes.DEBUG) {
+      DEBUG = changes.DEBUG.newValue ?? false;
+      debugModeCheckbox.checked = DEBUG;
+      logDebug('Debug mode changed to:', DEBUG);
+    }
+    // Update checkbox if background script disables auto-backup dynamically
+    if (changes.autoBackup !== undefined) {
+      autoBackupCheckbox.checked = changes.autoBackup.newValue ?? false;
+    }
   }
 });
