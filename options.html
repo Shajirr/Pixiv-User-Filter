@@ -147,12 +147,15 @@
       <label for="blacklist">Blacklisted User IDs (one per line):</label>
       <textarea id="blacklist" aria-describedby="error-message"></textarea>
       <span id="error-message" role="alert">Invalid input detected</span>
+      <div class="button-group" style="display: flex; gap: 10px; flex-wrap: wrap">
+      <button id="save" type="submit">Save Blacklist</button>
+      </div>
       <label>
-        <input type="checkbox" id="removeSameAuthor" />
+        <input type="checkbox" data-setting="removeSameAuthor" />
         Remove recommendations from the same author
       </label>
       <label>
-        <input type="checkbox" id="thumbnailFixer" />
+        <input type="checkbox" data-setting="thumbnailFixer" />
         Restore proper uncropped thumbnails
         <span
           title="Will display full, uncropped thumbnails, maintaining correct aspect ratio."
@@ -161,21 +164,23 @@
         >
       </label>
       <label>
-        <input type="checkbox" id="limitRecommendations" />
+        <input type="checkbox" data-setting="limitRecommendations" />
         Limit the number of recommendations
       </label>
       <div class="slider-container" style="display: flex; align-items: center; gap: 10px">
         <label for="maxRecommendations">Max recommendations:</label>
-        <input type="range" id="maxRecommendations" min="0" max="162" step="18" value="90" />
+        <input type="range" id="maxRecommendations" data-setting="maxRecommendations" min="0" max="162" step="18" />
         <span id="maxRecValue">90</span>
       </div>
       <label>
-        <input type="checkbox" id="autoBackup" />
+        <input type="checkbox" id="autoBackup" data-setting="autoBackup" />
         Enable automatic backups
-        <span class="description" style="margin-left: 4px;">(Requires 'Downloads' permission)</span>
+        <span
+                title="Requires 'Downloads' permission."
+                style="margin-left: 4px; cursor: help">ⓘ</span>
       </label>
       <label for="debugMode">
-        <input type="checkbox" id="debugMode" />
+        <input type="checkbox" id="debugMode" data-setting="debugMode" />
         Enable debug logging
         <span
           title="Default: off. Only enable if you need console logs for a bug report."
@@ -183,7 +188,6 @@
       </label>
       <div class="save-container" style="display: flex; flex-direction: column; gap: 10px; align-items: flex-start">
         <div class="button-group" style="display: flex; gap: 10px; flex-wrap: wrap">
-          <button id="save" type="submit">Save</button>
           <button id="exportBlacklist" type="button">Export Blacklist</button>
           <button id="saveBackup" type="button">Save Backup</button>
           <button id="loadBackup" type="button">Load Backup</button>
@@ -191,7 +195,8 @@
         </div>
         <p style="font-size: 0.8rem; margin-top: 0; margin-bottom: 5px">
           ℹ️ Automatic backups are saved in Firefox's default download location, at:<br>
-          <strong>[FF-addon-backups] / [Pxv.UF-backups]</strong>
+          <strong>[FF-addon-backups] / [Pxv.UF-backups]</strong><br>
+          ℹ️ Only blacklist changes require manual save, the rest of the settings are auto-saved.
         </p>
         <span id="status-message">Settings saved</span>
       </div>

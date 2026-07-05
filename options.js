@@ -13,7 +13,29 @@ function debounce(fn, delay) {
   };
 }
 
-const DEFAULT_MAX_RECOMMENDATIONS = 90;
+// Settings intended for cross-device sync
+const SYNC_DEFAULTS = Object.freeze({
+  removeSameAuthor: false,
+  thumbnailFixer: false,
+  limitRecommendations: false,
+  maxRecommendations: 90,
+});
+
+// Settings specific to the local browser installation
+const LOCAL_DEFAULTS = Object.freeze({
+  blacklist: [],
+  autoBackup: false,
+  debugMode: false,
+});
+
+const DEBOUNCE_DELAY = 400;
+let autoSaveTimer;
+
+// The buffer to hold gathered changes during the debounce window
+let pendingChanges = {
+  local: {},
+  sync: {},
+};
 
 function setTextareaHeight() {
   const textarea = document.getElementById('blacklist');
@@ -104,14 +126,11 @@ function toggleSliderState(enabled) {
 const textarea = document.getElementById('blacklist');
 const form = document.getElementById('options-form');
 const exportButton = document.getElementById('exportBlacklist');
-const limitCheckbox = document.getElementById('limitRecommendations');
-const maxRecSlider = document.getElementById('maxRecommendations');
-const autoBackupCheckbox = document.getElementById('autoBackup');
-const debugModeCheckbox = document.getElementById('debugMode');
 const saveBackupBtn = document.getElementById('saveBackup');
 const loadBackupBtn = document.getElementById('loadBackup');
 const loadBackupFile = document.getElementById('loadBackupFile');
 
+// Textarea auto-resize and validation (runs on type, but does not auto-save)
 textarea.addEventListener(
   'input',
   debounce(() => {
@@ -121,63 +140,173 @@ textarea.addEventListener(
   }, 300),
 );
 
-// Toggle auto-backup functionality and request permissions
-autoBackupCheckbox.addEventListener('change', async (e) => {
-  if (e.target.checked) {
-    try {
-      const granted = await browser.permissions.request({ permissions: ['downloads'] });
-      if (granted) {
-        await browser.storage.local.set({ autoBackup: true });
-        showStatusMessage('Auto-backup enabled', true);
-      } else {
-        e.target.checked = false;
-        await browser.storage.local.set({ autoBackup: false });
-        showStatusMessage('Permission denied. Auto-backup disabled.', false);
-      }
-    } catch (err) {
-      console.error('Permission request error:', err);
-      e.target.checked = false;
-    }
+// Listen to inputs, queue changes into a buffer, and autosave dynamically
+document.addEventListener('input', async (e) => {
+  const el = e.target;
+
+  // Ignore inputs without a defined data-setting attribute
+  if (!el.hasAttribute('data-setting')) return;
+
+  const key = el.getAttribute('data-setting');
+  let value;
+
+  // Parse numbers safely and handle checkboxes
+  if (el.type === 'checkbox') {
+    value = el.checked;
+  } else if (el.type === 'number' || el.type === 'range') {
+    // Included range for the slider
+    value = parseInt(el.value, 10);
   } else {
-    await browser.storage.local.set({ autoBackup: false });
-    showStatusMessage('Auto-backup disabled', true);
+    value = el.value;
   }
+
+  // Instant UI state updates (bypasses debounce wait)
+  if (key === 'limitRecommendations') toggleSliderState(value);
+  if (key === 'maxRecommendations') updateMaxRecValue(value);
+
+  // Special permission check requires synchronous user interaction to trigger native browser prompt
+  if (key === 'autoBackup') {
+    if (value === true) {
+      try {
+        const granted = await browser.permissions.request({ permissions: ['downloads'] });
+        if (!granted) {
+          el.checked = false;
+          showStatusMessage('Permission denied. Auto-backup disabled.', false);
+          return; // Cancel saving this property to buffer
+        }
+        showStatusMessage('Auto-backup enabled', true);
+      } catch (err) {
+        console.error('Permission request error:', err);
+        el.checked = false;
+        return;
+      }
+    } else {
+      showStatusMessage('Auto-backup disabled', true);
+    }
+  }
+
+  // Route the change to the correct storage bucket inside the buffer
+  if (['debugMode', 'autoBackup'].includes(key)) {
+    pendingChanges.local[key] = value;
+  } else {
+    pendingChanges.sync[key] = value;
+  }
+
+  // Clear the saving timer every time the user types/clicks
+  clearTimeout(autoSaveTimer);
+
+  // Start a new countdown which triggers the master commit function
+  autoSaveTimer = setTimeout(commitSaves, DEBOUNCE_DELAY);
 });
 
+// Execute pending saves
+async function commitSaves() {
+  const localUpdates = { ...pendingChanges.local };
+  const syncUpdates = { ...pendingChanges.sync };
+
+  // Cancel if nothing is queued
+  if (Object.keys(localUpdates).length === 0 && Object.keys(syncUpdates).length === 0) return;
+
+  // Instantly clear global queues so new inputs can buffer during the async save
+  pendingChanges.local = {};
+  pendingChanges.sync = {};
+
+  try {
+    const savePromises = [];
+
+    if (Object.keys(localUpdates).length > 0) {
+      savePromises.push(browser.storage.local.set(localUpdates));
+      if ('debugMode' in localUpdates) DEBUG = localUpdates.debugMode;
+    }
+
+    if (Object.keys(syncUpdates).length > 0) {
+      savePromises.push(browser.storage.sync.set(syncUpdates));
+    }
+
+    if (savePromises.length > 0) {
+      await Promise.all(savePromises);
+      const savedKeys = [...Object.keys(localUpdates), ...Object.keys(syncUpdates)];
+      logDebug(`Auto-saved keys: ${savedKeys.join(', ')}`);
+    }
+  } catch (error) {
+    console.error(error);
+    showStatusMessage(`Failed to save some settings`, false);
+  }
+}
+
+// Manual save for the blacklist
 form.addEventListener('submit', (e) => {
   e.preventDefault();
   const result = parseBlacklist(textarea.value);
   showErrorMessage(result);
-  if (result.isValid) {
-    const removeSameAuthor = document.getElementById('removeSameAuthor').checked;
-    const thumbnailFixer = document.getElementById('thumbnailFixer').checked;
-    const limitRecommendations = limitCheckbox.checked;
-    const maxRecommendations = parseInt(maxRecSlider.value, 10);
-    const DEBUG = debugModeCheckbox.checked;
 
-    browser.storage.local
-      .set({
-        blacklist: result.ids,
-        removeSameAuthor,
-        thumbnailFixer,
-        limitRecommendations,
-        maxRecommendations,
-        DEBUG,
-      })
-      .then(() => {
-        showStatusMessage('Settings saved', true);
-        browser.runtime.sendMessage({ action: 'refreshBlacklist' });
-      });
+  if (result.isValid) {
+    // Blacklist must stay in local storage due to sync quota limits
+    browser.storage.local.set({ blacklist: result.ids }).then(() => {
+      showStatusMessage('Blacklist saved successfully', true);
+      browser.runtime.sendMessage({ action: 'refreshBlacklist' });
+    });
   } else {
-    showStatusMessage('Settings not saved, error in the Blacklisted User ID list', false);
+    showStatusMessage('Error in blacklist, save failed', false);
   }
 });
+
+// Load settings from storage and update UI
+async function loadOptions() {
+  try {
+    // TEMP - destroy old keys stuck in local storage from previous versions
+    // to prevent them from overriding active sync data during backup generation.
+    const obsoleteLocalKeys = ['DEBUG', ...Object.keys(SYNC_DEFAULTS)];
+    await browser.storage.local.remove(obsoleteLocalKeys);
+
+    // Fetch from both sync and local areas
+    const syncSettings = await browser.storage.sync.get(SYNC_DEFAULTS);
+    const localSettings = await browser.storage.local.get(LOCAL_DEFAULTS);
+
+    DEBUG = localSettings.debugMode; // Update local DEBUG state
+    const settings = { ...syncSettings, ...localSettings }; // Merge for UI population
+    logDebug('Debug mode set to:', DEBUG);
+
+    // Populate generic fields dynamically
+    document.querySelectorAll('[data-setting]').forEach((el) => {
+      const key = el.getAttribute('data-setting');
+      if (el.type === 'checkbox') {
+        el.checked = settings[key];
+      } else {
+        el.value = settings[key];
+      }
+    });
+
+    // Populate manual blacklist field
+    textarea.value = settings.blacklist.join('\n');
+
+    // Verify permissions for auto-backup visually
+    const hasPerm = await browser.permissions.contains({ permissions: ['downloads'] });
+    if (settings.autoBackup && !hasPerm) {
+      await browser.storage.local.set({ autoBackup: false });
+      document.querySelector('[data-setting="autoBackup"]').checked = false;
+    }
+
+    // Set initial UI constraints
+    updateMaxRecValue(settings.maxRecommendations);
+    toggleSliderState(settings.limitRecommendations);
+    setTextareaHeight();
+    const validationResult = parseBlacklist(textarea.value);
+    showErrorMessage(validationResult);
+  } catch (error) {
+    console.error('Failed to load options:', error);
+  }
+}
 
 exportButton.addEventListener('click', exportBlacklist);
 
 saveBackupBtn.addEventListener('click', async () => {
   try {
     showStatusMessage('Creating backup...', true);
+
+    // Ensure any pending slider/checkbox buffers are saved to storage before requesting backup
+    clearTimeout(autoSaveTimer);
+    await commitSaves();
 
     // Request the backup payload from the BackupManager module
     const payload = await browser.runtime.sendMessage({ action: 'getManualBackup' });
@@ -231,13 +360,25 @@ loadBackupFile.addEventListener('change', (e) => {
       if (confirmed) {
         // Strip backup_manager_state just in case
         delete data.backup_manager_state;
+        delete data.DEBUG; // TEMP, remove obsolete local key
 
-        browser.storage.local.set(data).then(() => {
-          showStatusMessage('Backup loaded successfully', true);
-          browser.runtime.sendMessage({ action: 'refreshBlacklist' });
-          // Reload the page after 1s to visually reflect the newly loaded settings
-          setTimeout(() => window.location.reload(), 1500);
-        });
+        // Route data back to respective storage areas during restore
+        const syncDataToRestore = {};
+        const localDataToRestore = {};
+
+        for (const [k, v] of Object.entries(data)) {
+          if (k in LOCAL_DEFAULTS) localDataToRestore[k] = v;
+          if (k in SYNC_DEFAULTS) syncDataToRestore[k] = v;
+        }
+
+        Promise.all([browser.storage.sync.set(syncDataToRestore), browser.storage.local.set(localDataToRestore)]).then(
+          () => {
+            showStatusMessage('Backup loaded successfully', true);
+            browser.runtime.sendMessage({ action: 'refreshBlacklist' });
+            // Reload the page after 1.5s to visually reflect the newly loaded settings
+            setTimeout(() => window.location.reload(), 1500);
+          },
+        );
       }
     } catch (err) {
       console.error('[loadBackup] Error:', err);
@@ -250,70 +391,39 @@ loadBackupFile.addEventListener('change', (e) => {
   reader.readAsText(file);
 });
 
-maxRecSlider.addEventListener('input', (e) => {
-  updateMaxRecValue(e.target.value);
-});
-
-limitCheckbox.addEventListener('change', (e) => {
-  toggleSliderState(e.target.checked);
-});
-
-browser.storage.local
-  .get({
-    blacklist: [],
-    removeSameAuthor: false,
-    thumbnailFixer: false,
-    limitRecommendations: false,
-    maxRecommendations: DEFAULT_MAX_RECOMMENDATIONS,
-    autoBackup: false,
-    DEBUG: false,
-  })
-  .then(async (result) => {
-    DEBUG = result.DEBUG;
-    logDebug('Debug mode set to:', DEBUG);
-    debugModeCheckbox.checked = DEBUG;
-    textarea.value = result.blacklist.join('\n');
-    document.getElementById('removeSameAuthor').checked = result.removeSameAuthor;
-    document.getElementById('thumbnailFixer').checked = result.thumbnailFixer;
-    limitCheckbox.checked = result.limitRecommendations;
-    maxRecSlider.value = result.maxRecommendations;
-
-    // Verify permissions for auto-backup visually
-    const hasPerm = await browser.permissions.contains({ permissions: ['downloads'] });
-    if (result.autoBackup && !hasPerm) {
-      // Permission was revoked in browser settings while extension was inactive
-      await browser.storage.local.set({ autoBackup: false });
-      autoBackupCheckbox.checked = false;
-    } else {
-      autoBackupCheckbox.checked = result.autoBackup;
-    }
-
-    updateMaxRecValue(maxRecSlider.value);
-    toggleSliderState(limitCheckbox.checked);
-    setTextareaHeight();
-    const validationResult = parseBlacklist(textarea.value);
-    showErrorMessage(validationResult);
-  });
-
-// Listen for storage changes to keep the options page in sync
+// Listen for storage changes in both namespaces to keep the options page in sync dynamically
 browser.storage.onChanged.addListener((changes, namespace) => {
-  if (namespace === 'local') {
-    if (changes.blacklist) {
-      const newBlacklist = changes.blacklist.newValue || [];
+  for (const [key, { newValue }] of Object.entries(changes)) {
+    // Handle the manual textarea specifically
+    if (key === 'blacklist') {
+      const newBlacklist = newValue || [];
       textarea.value = newBlacklist.join('\n');
       setTextareaHeight();
       const validationResult = parseBlacklist(textarea.value);
       showErrorMessage(validationResult);
       logDebug('Options page: Blacklist updated from storage');
+      continue;
     }
-    if (changes.DEBUG) {
-      DEBUG = changes.DEBUG.newValue ?? false;
-      debugModeCheckbox.checked = DEBUG;
-      logDebug('Debug mode changed to:', DEBUG);
-    }
-    // Update checkbox if background script disables auto-backup dynamically
-    if (changes.autoBackup !== undefined) {
-      autoBackupCheckbox.checked = changes.autoBackup.newValue ?? false;
+
+    // Update bound DOM elements dynamically
+    const el = document.querySelector(`[data-setting="${key}"]`);
+    if (el) {
+      if (el.type === 'checkbox') {
+        el.checked = newValue ?? false;
+      } else {
+        el.value = newValue;
+      }
+
+      // Apply instant UI modifications tied to specific data sets if updated in background
+      if (key === 'debugMode') {
+        DEBUG = newValue ?? false;
+        logDebug('Debug mode changed to:', DEBUG);
+      }
+      if (key === 'maxRecommendations') updateMaxRecValue(el.value);
+      if (key === 'limitRecommendations') toggleSliderState(el.checked);
     }
   }
 });
+
+// Load options from storage when the page is loaded
+document.addEventListener('DOMContentLoaded', loadOptions);

@@ -45,27 +45,34 @@ function debounce(fn, delay) {
 
 async function loadSettings() {
   try {
-    const result = await browser.storage.local.get({
-      blacklist: [],
+    // Synced settings
+    const syncResult = await browser.storage.sync.get({
       removeSameAuthor: false,
       thumbnailFixer: false,
       limitRecommendations: false,
       maxRecommendations: DEFAULT_MAX_RECOMMENDATIONS,
-      DEBUG: false,
+    });
+
+    // Local machine-specific states
+    const localResult = await browser.storage.local.get({
+      blacklist: [],
+      debugMode: false,
       counterPos: { top: 'auto', bottom: '2%', left: '2%', right: 'auto' },
     });
-    settings.blacklist = new Set(result.blacklist);
-    settings.removeSameAuthor = result.removeSameAuthor;
-    settings.counterPos = result.counterPos;
-    thumbnailFixerEnabled = result.thumbnailFixer;
-    limitRecommendations = result.limitRecommendations;
-    maxRecommendations = result.maxRecommendations;
-    DEBUG = result.DEBUG;
+
+    // Set all initial values
+    settings.blacklist = new Set(localResult.blacklist);
+    settings.removeSameAuthor = syncResult.removeSameAuthor;
+    settings.counterPos = localResult.counterPos;
+    thumbnailFixerEnabled = syncResult.thumbnailFixer;
+    limitRecommendations = syncResult.limitRecommendations;
+    maxRecommendations = syncResult.maxRecommendations;
+    DEBUG = localResult.debugMode;
 
     logDebug('Debug mode set to:', DEBUG);
     logDebug(`[loadSettings] limitRecommendations=${limitRecommendations}, maxRecommendations=${maxRecommendations}`);
     logDebug(
-      `[loadSettings] Loaded settings: blacklist=${[...settings.blacklist].join(', ')}, removeSameAuthor=${settings.removeSameAuthor}, thumbnailFixer=${thumbnailFixerEnabled}`,
+      `[loadSettings] Loaded settings: blacklist size=${settings.blacklist.size}, removeSameAuthor=${settings.removeSameAuthor}, thumbnailFixer=${thumbnailFixerEnabled}`,
     );
     // Update thumbnail fixer after loading settings
     if (typeof ThumbnailFixer !== 'undefined') {
@@ -754,6 +761,40 @@ function setupArtworkObserver() {
   }
 }
 
+function waitForDiscoveryContainers(attempt = 1) {
+  const zone = document.querySelector(selectors.discoveryZone);
+
+  // If the top-level wrapper isn't rendered yet, retry a few times
+  if (!zone) {
+    if (attempt < 10) setTimeout(() => waitForDiscoveryContainers(attempt + 1), 500);
+    return;
+  }
+
+  // If the containers are already populated with artworks, process them immediately
+  if (zone.querySelector(`ul li ${selectors.artworkLink}`)) {
+    logDebug('[waitForDiscoveryContainers] Zone already populated, processing...');
+    setupArtworkObserver();
+    updateAllArtworks();
+    return;
+  }
+
+  logDebug('[waitForDiscoveryContainers] Watching discovery zone for late containers...');
+
+  // Set up a temporary observer to catch the initial batch of elements
+  const observer = new MutationObserver((mutations, obs) => {
+    if (zone.querySelector(`ul li ${selectors.artworkLink}`)) {
+      logDebug('[waitForDiscoveryContainers] Containers populated! Self-destructing observer.');
+      obs.disconnect(); // Kill this observer permanently
+
+      setupArtworkObserver();
+      updateAllArtworks();
+    }
+  });
+
+  // Watch the discovery wrapper for the initial injection
+  observer.observe(zone, { childList: true, subtree: true });
+}
+
 function waitForHomeContainers(attempt = 1) {
   const bg1 = document.querySelector(selectors.bgBackground1);
 
@@ -948,13 +989,15 @@ function updatePage() {
           updateAllArtworks();
 
           if (isArtworkPage) {
-            waitForRecommendationGrid(); // only wait on artwork pages
+            waitForRecommendationGrid(); // wait on artwork pages
           } else {
             setupArtworkObserver();
             updateAllArtworks();
 
             if (pageType === 'home') {
               waitForHomeContainers();
+            } else if (pageType === 'discovery') {
+              waitForDiscoveryContainers(); // wait on discovery page
             }
           }
           updateCounter();
@@ -1058,9 +1101,27 @@ async function main() {
 
 // Listen for storage changes
 browser.storage.onChanged.addListener((changes, namespace) => {
-  if (namespace === 'local' && changes.DEBUG) {
-    DEBUG = changes.DEBUG.newValue ?? false;
-    logDebug('Debug mode changed to:', DEBUG);
+  if (namespace === 'local') {
+    if (changes.debugMode !== undefined) {
+      DEBUG = changes.debugMode.newValue ?? false;
+    }
+    if (changes.blacklist !== undefined) {
+      settings.blacklist = new Set(changes.blacklist.newValue);
+    }
+    if (changes.counterPos !== undefined) {
+      settings.counterPos = changes.counterPos.newValue;
+      updateCounter();
+    }
+  } else if (namespace === 'sync') {
+    if (changes.removeSameAuthor !== undefined) settings.removeSameAuthor = changes.removeSameAuthor.newValue;
+
+    if (changes.thumbnailFixer !== undefined) {
+      thumbnailFixerEnabled = changes.thumbnailFixer.newValue;
+      if (typeof ThumbnailFixer !== 'undefined') ThumbnailFixer.setEnabled(thumbnailFixerEnabled);
+    }
+
+    if (changes.limitRecommendations !== undefined) limitRecommendations = changes.limitRecommendations.newValue;
+    if (changes.maxRecommendations !== undefined) maxRecommendations = changes.maxRecommendations.newValue;
   }
 });
 

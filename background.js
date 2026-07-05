@@ -16,16 +16,19 @@ let webRequestListener = null; // store reference to the listener
 
 async function loadSettings() {
   try {
-    const result = await browser.storage.local.get({
+    const syncResult = await browser.storage.sync.get({
       limitRecommendations: false,
       maxRecommendations: DEFAULT_MAX_RECOMMENDATIONS,
-      autoBackup: false,
-      DEBUG: false,
     });
-    settings.limitRecommendations = result.limitRecommendations;
-    settings.maxRecommendations = result.maxRecommendations;
-    autoBackupEnabled = result.autoBackup;
-    DEBUG = result.DEBUG;
+    const localResult = await browser.storage.local.get({
+      autoBackup: false,
+      debugMode: false,
+    });
+
+    settings.limitRecommendations = syncResult.limitRecommendations;
+    settings.maxRecommendations = syncResult.maxRecommendations;
+    autoBackupEnabled = localResult.autoBackup;
+    DEBUG = localResult.debugMode;
 
     logDebug('Debug mode set to:', DEBUG);
     logDebug(
@@ -267,14 +270,22 @@ browser.permissions.onRemoved.addListener((permissions) => {
 // Listen for storage changes
 browser.storage.onChanged.addListener((changes, namespace) => {
   if (namespace === 'local') {
-    if (changes.DEBUG) {
-      DEBUG = changes.DEBUG.newValue ?? false;
+    if (changes.debugMode) {
+      DEBUG = changes.debugMode.newValue ?? false;
       logDebug('Debug mode changed to:', DEBUG);
     }
     if (changes.autoBackup !== undefined) {
       autoBackupEnabled = changes.autoBackup.newValue ?? false;
       logDebug('Auto backup state changed to:', autoBackupEnabled);
       backupManager.updateAlarmState(autoBackupEnabled);
+    }
+  } else if (namespace === 'sync') {
+    if (changes.limitRecommendations !== undefined) {
+      settings.limitRecommendations = changes.limitRecommendations.newValue;
+      updateWebRequestListener(); // Refresh listener if needed
+    }
+    if (changes.maxRecommendations !== undefined) {
+      settings.maxRecommendations = changes.maxRecommendations.newValue;
     }
   }
 });
@@ -288,11 +299,15 @@ const backupManager = new BackupManager(
     retention: { hourly: 4, daily: 3, weekly: 3, monthly: 3 },
   },
   async () => {
-    // Fetch all current storage data
-    const allData = await browser.storage.local.get(null);
+    // Fetch all current storage data from both areas
+    const syncData = await browser.storage.sync.get(null);
+    const localData = await browser.storage.local.get(null);
+
     // Remove the backup manager's internal history state so it's not included in the backup
-    delete allData.backup_manager_state;
-    return allData;
+    delete localData.backup_manager_state;
+
+    // Combine them into a single payload
+    return { ...syncData, ...localData };
   },
 );
 

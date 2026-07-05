@@ -7,8 +7,7 @@ function logDebugLocal(...args) {
 const ThumbnailFixer = {
   // Regular expression to match Pixiv thumbnail URLs
   srcRegexp:
-    /https?:\/\/i[^.]*\.pximg\.net\/(?:c\/\d{3,4}x\d{3,4}(?:_\d+)?(?:_a2)?\/)?(custom-thumb|img-master)\/.*?(\d+_p\d+)_(custom|master|square)1200\.(\w{2,4})/,
-
+    /https?:\/\/(i[^.]*\.pximg\.net)\/(?:c\/(\d{3,4}x\d{3,4}(?:_\d+)?)(_a2)?\/)?(custom-thumb|img-master)\/(.*?)([\w-]+_p\d+)_(custom|master|square)1200\.(\w{2,4})/,
   // Available quality prefixes, ordered from lowest to highest
   qualityPrefixes: [
     '100x100',
@@ -174,11 +173,16 @@ const ThumbnailFixer = {
       // Also fix srcset if present
       if (img.srcset) {
         logDebugLocal(`[fixImageElement] Fixing srcset: ${img.srcset}`);
-        img.srcset = img.srcset.replace(this.srcRegexp, (match, domain, quality, q1, a2, pathType, imageId) => {
-          let newQuality = quality;
-          if (a2) newQuality = this.getNextQuality(quality);
-          return `https://${domain}/${newQuality ? `c/${newQuality}/` : ''}img-master/${imageId}_master1200.jpg`;
-        });
+        img.srcset = img.srcset.replace(
+          this.srcRegexp,
+          (match, domain, quality, a2, pathType, datePath, imageId, imageType, extension) => {
+            let newQuality = quality;
+            if (a2) newQuality = this.getNextQuality(quality);
+
+            // Inject the exact captured datePath back into the URL
+            return `https://${domain}/${newQuality ? `c/${newQuality}/` : ''}img-master/${datePath}${imageId}_master1200.${extension}`;
+          },
+        );
       }
 
       // Change object-fit from cover to contain
