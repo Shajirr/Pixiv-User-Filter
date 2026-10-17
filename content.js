@@ -5,12 +5,16 @@ function logDebug(...args) {
   if (DEBUG) console.log(debugPrefix, ...args);
 }
 
+// Debug switch: set to true to disable CSS hiding and placeholders on blocked profiles
+const TEST_DISABLE_PLACEHOLDERS_AND_CSS = false;
+
 const DEFAULT_MAX_RECOMMENDATIONS = 90;
 
 let settings = {
   blacklist: new Set(),
   removeSameAuthor: false,
-  counterPos: { top: 'auto', bottom: '2%', left: '2%', right: 'auto' },
+  indicatorPos: { top: 'auto', bottom: '2%', left: '2%', right: 'auto' },
+  indicatorMode: 'counter', // 'counter' | 'indicator' | 'off'
 };
 
 // State management
@@ -30,7 +34,7 @@ const appState = { ...defaultState };
 
 let pageContentDebounceTimer = null;
 let refreshDebounceTimer = null;
-let counterElement = null;
+let indicatorElement = null;
 let thumbnailFixerEnabled = false;
 let limitRecommendations = false;
 let maxRecommendations = 90;
@@ -43,6 +47,128 @@ function debounce(fn, delay) {
   };
 }
 
+// Inject CSS for placeholders and instant pre-render image hiding on blocked profiles
+function injectProfileBlockStyles() {
+  if (document.getElementById('pxv-uf-profile-block-styles')) return;
+  const style = document.createElement('style');
+  style.id = 'pxv-uf-profile-block-styles';
+  style.textContent = `
+    /* Immediately prevent artwork thumbnails from flashing before JS processes the node */
+    html.pxv-uf-block-profile ul li a[href*="/artworks/"] img:not(.pxv-uf-blocked-icon) {
+      opacity: 0 !important;
+      visibility: hidden !important;
+    }
+    .pxv-uf-blocked-icon {
+      opacity: 1 !important;
+      visibility: visible !important;
+    }
+    .pxv-uf-blocked-thumb-link {
+      position: relative !important;
+      display: block !important;
+      width: 100% !important;
+      min-width: 136px !important;
+      min-height: 136px !important;
+      aspect-ratio: 1 / 1 !important;
+      background-color: rgba(128, 128, 128, 0.14) !important;
+      border-radius: 4px !important;
+      overflow: hidden !important;
+    }
+    .pxv-uf-blocked-thumb-link > *:not(.pxv-uf-blocked-placeholder) {
+      opacity: 0 !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
+    }
+    .pxv-uf-blocked-placeholder {
+      position: absolute !important;
+      inset: 0 !important;
+      display: flex !important;
+      flex-direction: column !important;
+      align-items: center !important;
+      justify-content: center !important;
+      gap: 6px !important;
+      color: #858585 !important;
+      font-size: 12px !important;
+      font-weight: 500 !important;
+      user-select: none !important;
+      pointer-events: none !important;
+      z-index: 10 !important;
+      opacity: 1 !important;
+      visibility: visible !important;
+    }
+    .pxv-uf-blocked-placeholder > span {
+      font-weight: 700 !important;
+      font-size: 14px !important;
+    }
+  `;
+  (document.head || document.documentElement).appendChild(style);
+}
+
+// Toggle root class so CSS immediately masks profile artwork thumbnails before DOM observers fire
+function updateProfileBlockCssState() {
+  if (TEST_DISABLE_PLACEHOLDERS_AND_CSS) {
+    document.documentElement.classList.remove('pxv-uf-block-profile');
+    return;
+  }
+  injectProfileBlockStyles();
+  const isProfile = getPageType() === 'profile';
+  const ownerId = isProfile ? getProfileOwnerId() : null;
+  const shouldBlock = Boolean(
+    isProfile && settings.hideBlockedArtistProfileArtworks && ownerId && settings.blacklist.has(ownerId),
+  );
+  document.documentElement.classList.toggle('pxv-uf-block-profile', shouldBlock);
+}
+
+// Replace artwork thumbnail inside a profile <li> with a placeholder
+function applyProfilePlaceholder(li) {
+  if (TEST_DISABLE_PLACEHOLDERS_AND_CSS) return;
+
+  // Remove bookmark button from blocked profile artwork cell
+  li.querySelectorAll(selectors.bookmarkButton).forEach((btn) => btn.remove());
+
+  const artworkLinks = li.querySelectorAll(selectors.artworkLink);
+  if (artworkLinks.length === 0) return;
+
+  // Find the thumbnail link (as opposed to the text title link below it)
+  let thumbLink = null;
+  for (const link of artworkLinks) {
+    if (link.querySelector('img, div')) {
+      thumbLink = link;
+      break;
+    }
+  }
+  if (!thumbLink) thumbLink = artworkLinks[0];
+
+  thumbLink.classList.add('pxv-uf-blocked-thumb-link');
+
+  if (!thumbLink.querySelector('.pxv-uf-blocked-placeholder')) {
+    const placeholder = document.createElement('div');
+    placeholder.className = 'pxv-uf-blocked-placeholder';
+
+    const icon = document.createElement('img');
+    icon.src = browser.runtime.getURL('icons/blocked.svg');
+    icon.className = 'pxv-uf-blocked-icon';
+    placeholder.appendChild(icon);
+
+    const label = document.createElement('span');
+    label.textContent = 'Blocked';
+    placeholder.appendChild(label);
+
+    thumbLink.appendChild(placeholder);
+  }
+  li.dataset.pxvBlocked = 'true';
+}
+
+// Restore original thumbnail if user is unblocked or setting is toggled off
+function removeProfilePlaceholder(li) {
+  if (!li.dataset.pxvBlocked) return;
+  delete li.dataset.pxvBlocked;
+
+  li.querySelectorAll('.pxv-uf-blocked-thumb-link').forEach((el) => {
+    el.classList.remove('pxv-uf-blocked-thumb-link');
+  });
+  li.querySelectorAll('.pxv-uf-blocked-placeholder').forEach((el) => el.remove());
+}
+
 async function loadSettings() {
   try {
     // Synced settings
@@ -51,19 +177,23 @@ async function loadSettings() {
       thumbnailFixer: false,
       limitRecommendations: false,
       maxRecommendations: DEFAULT_MAX_RECOMMENDATIONS,
+      indicatorMode: 'counter', // 'counter' | 'indicator' | 'off'
+      hideBlockedArtistProfileArtworks: true,
     });
 
     // Local machine-specific states
     const localResult = await browser.storage.local.get({
       blacklist: [],
       debugMode: false,
-      counterPos: { top: 'auto', bottom: '2%', left: '2%', right: 'auto' },
+      indicatorPos: { top: 'auto', bottom: '2%', left: '2%', right: 'auto' },
     });
 
     // Set all initial values
     settings.blacklist = new Set(localResult.blacklist);
     settings.removeSameAuthor = syncResult.removeSameAuthor;
-    settings.counterPos = localResult.counterPos;
+    settings.hideBlockedArtistProfileArtworks = syncResult.hideBlockedArtistProfileArtworks;
+    settings.indicatorPos = localResult.indicatorPos;
+    settings.indicatorMode = syncResult.indicatorMode;
     thumbnailFixerEnabled = syncResult.thumbnailFixer;
     limitRecommendations = syncResult.limitRecommendations;
     maxRecommendations = syncResult.maxRecommendations;
@@ -72,8 +202,9 @@ async function loadSettings() {
     logDebug('Debug mode set to:', DEBUG);
     logDebug(`[loadSettings] limitRecommendations=${limitRecommendations}, maxRecommendations=${maxRecommendations}`);
     logDebug(
-      `[loadSettings] Loaded settings: blacklist size=${settings.blacklist.size}, removeSameAuthor=${settings.removeSameAuthor}, thumbnailFixer=${thumbnailFixerEnabled}`,
+      `[loadSettings] Loaded settings: blacklist size=${settings.blacklist.size}, removeSameAuthor=${settings.removeSameAuthor}, hideBlockedArtistProfileArtworks=${settings.hideBlockedArtistProfileArtworks}, thumbnailFixer=${thumbnailFixerEnabled}, indicatorMode=${settings.indicatorMode}`,
     );
+    updateProfileBlockCssState();
     // Update thumbnail fixer after loading settings
     if (typeof ThumbnailFixer !== 'undefined') {
       ThumbnailFixer.setEnabled(thumbnailFixerEnabled);
@@ -100,6 +231,7 @@ const selectors = {
   tagGridCell: 'div.col-span-2',
   tagGridClass: 'col-span-2',
   artworkLink: 'a[href*="/artworks/"]',
+  bookmarkButton: 'div[data-ga4-label="bookmark_button"]',
 };
 
 // Helper: optimized check for new artwork nodes in mutation loops.
@@ -131,6 +263,8 @@ function hasNewArtworkNodes(addedNodes, isHomeFeed = false, isGrid = false) {
 function resetExtensionState() {
   logDebug('[resetExtensionState] Resetting state and hiding UI');
 
+  updateProfileBlockCssState();
+
   // Clear pending retry timeouts to avoid race conditions on navigation
   if (appState.updateArtworksTimeout) {
     clearTimeout(appState.updateArtworksTimeout);
@@ -148,7 +282,7 @@ function resetExtensionState() {
 
   appState.removedCount = 0;
   appState.currentAuthorId = null;
-  updateCounter(); // This naturally hides the counter because isFilterablePage() handles display logic
+  updateIndicator(); // This naturally hides the indicator because isFilterablePage() handles display logic
 
   if (document.visibilityState === 'visible') {
     browser.runtime.sendMessage({ action: 'setBadge', count: 0 });
@@ -156,32 +290,78 @@ function resetExtensionState() {
   }
 }
 
-function updateCounter() {
+function applyIndicatorModeStyles(el) {
+  const isIndicator = settings.indicatorMode === 'indicator';
+
+  // Apply styles based on the current indicator mode
+  Object.assign(el.style, {
+    position: 'fixed',
+    top: settings.indicatorPos.top,
+    bottom: settings.indicatorPos.bottom,
+    left: settings.indicatorPos.left,
+    right: settings.indicatorPos.right,
+    zIndex: '999999',
+    backgroundColor: isIndicator ? 'rgba(40, 167, 69, 0.85)' : 'rgba(0, 0, 0, 0.75)',
+    color: '#fff',
+    width: isIndicator ? '14px' : 'auto',
+    height: isIndicator ? '14px' : 'auto',
+    padding: isIndicator ? '0' : '6px 12px',
+    borderRadius: isIndicator ? '50%' : '20px',
+    fontSize: '14px',
+    cursor: 'grab',
+    userSelect: 'none',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+    backdropFilter: 'blur(4px)',
+    display: isFilterablePage() ? 'flex' : 'none', // Hide indicator if it's a non-filterable page, show if filterable
+    alignItems: 'center',
+    justifyContent: 'center',
+    whiteSpace: 'nowrap',
+  });
+
+  el.textContent = isIndicator ? '' : `Removed: ${appState.removedCount}`;
+}
+
+function updateIndicator() {
   try {
-    if (!counterElement) {
-      logDebug('[updateCounter] Counter element not found, re-creating');
-      createCounter();
-    } else if (!document.body.contains(counterElement)) {
-      // If counter was somehow detached, reattach it
-      logDebug('[updateCounter] Counter element detached from DOM, reattaching');
-      document.body.appendChild(counterElement);
+    // If indicator is disabled, ensure it's removed and don't recreate
+    if (settings.indicatorMode === 'off') {
+      if (indicatorElement && document.body.contains(indicatorElement)) {
+        logDebug('[updateIndicator] Floating indicator disabled, removing element');
+        indicatorElement.remove();
+        indicatorElement = null; // Clear reference to allow GC and proper recreation
+      }
+      // Still update badge
+      if (document.visibilityState === 'visible') {
+        browser.runtime.sendMessage({ action: 'setBadge', count: appState.removedCount });
+        logDebug(
+          `[updateIndicator] Updated badge with count: ${appState.removedCount} (tab is visible, indicator disabled)`,
+        );
+      }
+      return;
     }
 
-    if (counterElement) {
-      counterElement.textContent = `Removed: ${appState.removedCount}`;
-      // Hide counter if it's a non-filterable page, show if filterable
-      counterElement.style.display = isFilterablePage() ? 'flex' : 'none';
-      logDebug(`[updateCounter] Updated floating counter: Removed: ${appState.removedCount}`);
+    if (!indicatorElement) {
+      logDebug('[updateIndicator] Indicator element not found, re-creating');
+      createIndicator();
+    } else if (!document.body.contains(indicatorElement)) {
+      // If indicator was somehow detached, reattach it
+      logDebug('[updateIndicator] Indicator element detached from DOM, reattaching');
+      document.body.appendChild(indicatorElement);
+    }
+
+    if (indicatorElement) {
+      applyIndicatorModeStyles(indicatorElement);
+      logDebug(`[updateIndicator] Updated floating ${settings.indicatorMode}: Removed: ${appState.removedCount}`);
     }
 
     if (document.visibilityState === 'visible') {
       browser.runtime.sendMessage({ action: 'setBadge', count: appState.removedCount });
-      logDebug(`[updateCounter] Updated badge with count: ${appState.removedCount} (tab is visible)`);
+      logDebug(`[updateIndicator] Updated badge with count: ${appState.removedCount} (tab is visible)`);
     } else {
-      logDebug(`[updateCounter] Skipped badge update (tab is not visible)`);
+      logDebug(`[updateIndicator] Skipped badge update (tab is not visible)`);
     }
   } catch (error) {
-    console.error('[updateCounter] Error:', error);
+    console.error('[updateIndicator] Error:', error);
   }
 }
 
@@ -219,6 +399,30 @@ function findTagPageGrids() {
   if (cells.length === 0) return [];
   logDebug(`[findTagPageGrids] Found grid container with ${cells.length} cell(s)`);
   return [gridContainer];
+}
+
+// Get the profile owner's user ID from the current page URL
+function getProfileOwnerId() {
+  const match = window.location.pathname.match(/(?:\/en\/)?users\/(\d+)/);
+  return match ? match[1] : null;
+}
+
+// Profile pages (/users/<id>, /illustrations, /manga, /request) have a single UI element hosting
+// the entire image grid, with <li> grid cells. Detect it by finding the <ul> container whose
+// direct children are <li> cells containing artwork links.
+function findProfilePageGrids() {
+  const allULs = document.querySelectorAll('ul');
+  const grids = [];
+
+  for (const ul of allULs) {
+    const liCells = ul.querySelectorAll(`:scope > li ${selectors.artworkLink}`);
+    if (liCells.length > 0) {
+      grids.push(ul);
+      logDebug(`[findProfilePageGrids] Found profile grid container with ${liCells.length} cell(s)`, ul);
+    }
+  }
+
+  return grids;
 }
 
 function findHomePageFeed() {
@@ -312,6 +516,10 @@ function getArtworkGridContainers() {
       logDebug('[getArtworkGridContainers] Falling back to content-based detection');
       grids = findArtworkGridsByContent();
     }
+  } else if (pageType === 'profile' || pageType === 'bookmarks') {
+    // Profile & bookmarks pages: single element hosting the image grid of li cells
+    grids = findProfilePageGrids();
+    logDebug(`[getArtworkGridContainers] ${pageType} page: ${grids.length} container(s) found`);
   } else {
     // Tag page
     grids = findTagPageGrids();
@@ -341,12 +549,19 @@ function updateAllArtworks(attempt = 1, maxAttempts = 3) {
 
     logDebug('[updateAllArtworks] Starting artwork update');
 
+    updateProfileBlockCssState();
+
     // Determine context for "removeSameAuthor" dynamically
     const pageType = getPageType();
     const isArtworkPage = pageType === 'artwork';
+    const isProfilePage = pageType === 'profile';
     const shouldRemoveAuthor = settings.removeSameAuthor && isArtworkPage;
 
     const containers = getArtworkGridContainers();
+    const ownerId = isProfilePage ? getProfileOwnerId() : null;
+    const hideAllProfileArtworks =
+      settings.hideBlockedArtistProfileArtworks && ownerId && settings.blacklist.has(ownerId);
+
     let totalProcessed = 0;
     let totalBlocked = 0;
     let newlyProcessed = 0;
@@ -354,18 +569,24 @@ function updateAllArtworks(attempt = 1, maxAttempts = 3) {
     // Collect elements for batch DOM style changes
     const elementsToHide = [];
     const elementsToShow = [];
+    const elementsToBlockPlaceholder = [];
+    const elementsToUnblockPlaceholder = [];
 
     containers.forEach((container) => {
       // Explicitly choose the correct child selector based on the actual container type
       let items;
       if (container.tagName === 'UL') {
-        // Artwork pages + base tag pages (/tags/BlueArchive, etc.) use <ul><li>...
-        items = container.querySelectorAll('li');
-        logDebug(`[updateAllArtworks] UL container -> using 'li' selector (${items.length} items)`);
+        // Artwork pages + base tag pages (/tags/<tag>, etc.) use <ul><li>...
+        items = container.querySelectorAll(':scope > li');
+        logDebug(`[updateAllArtworks] UL container -> using ':scope > li' selector (${items.length} items)`);
       } else if (container.dataset?.ga4Label === 'home_recommend') {
         // Home page feed items are direct div children of the home_recommend container
         items = container.querySelectorAll(':scope > div');
         logDebug(`[updateAllArtworks] Home feed container -> using ':scope > div' selector (${items.length} items)`);
+      } else if (isProfilePage) {
+        // Profile pages: the container hosts <li> grid cells
+        items = container.querySelectorAll('li');
+        logDebug(`[updateAllArtworks] Profile container -> using 'li' selector (${items.length} items)`);
       } else {
         // Newer tag pages use div.col-span-2 grid
         items = container.querySelectorAll(selectors.tagGridCell);
@@ -375,6 +596,23 @@ function updateAllArtworks(attempt = 1, maxAttempts = 3) {
       totalProcessed += items.length;
 
       items.forEach((item) => {
+        // Profile pages: all artworks belong to the profile owner.
+        // Place placeholders over them when the owner is blacklisted and the setting is enabled.
+        if (isProfilePage) {
+          if (hideAllProfileArtworks) {
+            if (item.querySelector(selectors.artworkLink)) {
+              totalBlocked++;
+              if (!item.dataset.pxvBlocked) newlyProcessed++;
+              elementsToBlockPlaceholder.push(item);
+            }
+          } else if (item.dataset.pxvBlocked) {
+            elementsToUnblockPlaceholder.push(item);
+          }
+          // Ensure item is not hidden via display:none from any other rule
+          if (item.style.display === 'none') elementsToShow.push(item);
+          return;
+        }
+
         // item = <li> OR <div class="col-span-2">
         const result = processLi(item, settings.blacklist, appState.currentAuthorId, shouldRemoveAuthor);
         const { shouldBlock, alreadyProcessed } = result;
@@ -392,13 +630,20 @@ function updateAllArtworks(attempt = 1, maxAttempts = 3) {
     });
 
     // Apply DOM changes in batches using requestAnimationFrame
-    if (elementsToHide.length > 0 || elementsToShow.length > 0) {
+    if (
+      elementsToHide.length > 0 ||
+      elementsToShow.length > 0 ||
+      elementsToBlockPlaceholder.length > 0 ||
+      elementsToUnblockPlaceholder.length > 0
+    ) {
       requestAnimationFrame(() => {
         logDebug(
-          `[updateAllArtworks] Batching style changes: hiding ${elementsToHide.length}, unhiding ${elementsToShow.length}`,
+          `[updateAllArtworks] Batching changes: hiding ${elementsToHide.length}, unhiding ${elementsToShow.length}, blocking ${elementsToBlockPlaceholder.length}, unblocking ${elementsToUnblockPlaceholder.length}`,
         );
         elementsToHide.forEach((el) => (el.style.display = 'none'));
         elementsToShow.forEach((el) => (el.style.display = ''));
+        elementsToBlockPlaceholder.forEach((el) => applyProfilePlaceholder(el));
+        elementsToUnblockPlaceholder.forEach((el) => removeProfilePlaceholder(el));
       });
     }
 
@@ -412,7 +657,7 @@ function updateAllArtworks(attempt = 1, maxAttempts = 3) {
     logDebug(
       `[updateAllArtworks] Processed ${totalProcessed} items (${newlyProcessed} new), blocked ${totalBlocked} total`,
     );
-    updateCounter();
+    updateIndicator();
   } catch (error) {
     console.error('[updateAllArtworks] Error:', error);
   }
@@ -492,44 +737,28 @@ function makeDraggable(el) {
     Object.assign(el.style, newPos);
 
     // Save position to storage
-    settings.counterPos = newPos;
-    browser.storage.local.set({ counterPos: settings.counterPos });
-    logDebug('[Pxv.UF] Saved new responsive counter position:', settings.counterPos);
+    settings.indicatorPos = newPos;
+    browser.storage.local.set({ indicatorPos: settings.indicatorPos });
+    logDebug('[Pxv.UF] Saved new responsive indicator position:', settings.indicatorPos);
   }
 }
 
-function createCounter() {
-  if (counterElement) return;
+function createIndicator() {
+  if (indicatorElement) return;
 
-  logDebug('[createCounter] Creating floating counter');
-  counterElement = document.createElement('div');
-  counterElement.className = 'pixiv-recommendation-counter';
+  // Don't create indicator if disabled
+  if (settings.indicatorMode === 'off') {
+    logDebug('[createIndicator] Floating indicator is disabled, skipping creation');
+    return;
+  }
 
-  Object.assign(counterElement.style, {
-    position: 'fixed',
-    top: settings.counterPos.top,
-    bottom: settings.counterPos.bottom,
-    left: settings.counterPos.left,
-    right: settings.counterPos.right,
-    zIndex: '999999',
-    backgroundColor: 'rgba(0, 0, 0, 0.75)',
-    color: '#fff',
-    padding: '6px 12px',
-    borderRadius: '20px',
-    fontSize: '14px',
-    cursor: 'grab',
-    userSelect: 'none',
-    boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
-    backdropFilter: 'blur(4px)',
-    display: isFilterablePage() ? 'flex' : 'none',
-    alignItems: 'center',
-    justifyContent: 'center',
-    whiteSpace: 'nowrap',
-  });
+  logDebug('[createIndicator] Creating floating indicator');
+  indicatorElement = document.createElement('div');
+  indicatorElement.className = 'pixiv-recommendation-indicator';
 
-  counterElement.textContent = `Removed: ${appState.removedCount}`;
-  document.body.appendChild(counterElement);
-  makeDraggable(counterElement);
+  applyIndicatorModeStyles(indicatorElement);
+  document.body.appendChild(indicatorElement);
+  makeDraggable(indicatorElement);
 }
 
 function getPageAuthorId(attempt = 1, maxAttempts = 5) {
@@ -635,6 +864,18 @@ function getPageType() {
   if (/^\/(?:en\/)?tags\/[^\/]+\/(artworks|illustrations|manga)\/?$/.test(pathname)) {
     logDebug(`[getPageType] Detected: Tag subpage`);
     return 'tag';
+  }
+
+  // Profile page (/users/<id>, /users/<id>/artworks, /users/<id>/illustrations, /users/<id>/manga, /users/<id>/request)
+  if (/^\/(?:en\/)?users\/\d+(\/(artworks|illustrations|manga|request))?\/?$/.test(pathname)) {
+    logDebug(`[getPageType] Detected: Profile page`);
+    return 'profile';
+  }
+
+  // User bookmarks page (/users/<id>/bookmarks/artworks) - contains works from various artists
+  if (/^\/(?:en\/)?users\/\d+\/bookmarks(\/artworks)?\/?$/.test(pathname)) {
+    logDebug(`[getPageType] Detected: Bookmarks page`);
+    return 'bookmarks';
   }
 
   // Tag search page (e.g. /search?q=search_term&s_mode=tag)
@@ -834,7 +1075,7 @@ function setupPageContentObserver() {
   const pageType = getPageType();
   // Only pages with infinite/pagination loading need this observer
   // Base tag pages (tag-base) have no infinite loading -> skip observer
-  if (!['tag', 'tag-search', 'illustration', 'manga', 'discovery'].includes(pageType)) return;
+  if (!['tag', 'tag-search', 'illustration', 'manga', 'discovery', 'profile', 'bookmarks'].includes(pageType)) return;
 
   let targetContainer = document.body;
   let checkIsGrid = false;
@@ -918,8 +1159,16 @@ function refreshArtworks(isPagination = false) {
       appState.updateArtworksTimeout = null;
     }
 
+    // Clear page content debounce timer
+    if (pageContentDebounceTimer) {
+      clearTimeout(pageContentDebounceTimer);
+      pageContentDebounceTimer = null;
+    }
+
     refreshDebounceTimer = setTimeout(() => {
       logDebug(`[refreshArtworks] Refreshing artworks (debounced, isPagination=${isPagination})`);
+
+      updateProfileBlockCssState();
 
       // Return if the page is not filterable
       if (!isFilterablePage()) return;
@@ -938,11 +1187,19 @@ function refreshArtworks(isPagination = false) {
       appState.recommendationObservers = [];
       logDebug('[refreshArtworks] Disconnected previous artwork observers');
 
+      // Disconnect pageContentObserver to avoid duplicate observers
+      if (appState.pageContentObserver) {
+        appState.pageContentObserver.disconnect();
+        appState.pageContentObserver = null;
+        logDebug('[refreshArtworks] Disconnected pageContentObserver');
+      }
+
       updateAllArtworks();
       setupArtworkObserver();
+      setupPageContentObserver(); // Re-setup page content observer
 
-      // Ensure counter exists and reflects the latest state
-      updateCounter();
+      // Ensure indicator exists and reflects the latest state
+      updateIndicator();
     }, 250); // debounce timer
   } catch (error) {
     console.error('[refreshArtworks] Error:', error);
@@ -952,6 +1209,11 @@ function refreshArtworks(isPagination = false) {
 function updatePage() {
   try {
     logDebug('[updatePage] Updating page for URL:', window.location.pathname);
+
+    // Keep background script's tabUrls map synchronized on SPA navigations
+    browser.runtime.sendMessage({ action: 'updateTabUrl', url: window.location.href }).catch(() => {});
+
+    updateProfileBlockCssState();
 
     // Clear active fallback retry timeouts to eliminate zombie race conditions
     if (appState.updateArtworksTimeout) {
@@ -973,7 +1235,10 @@ function updatePage() {
       logDebug(`[updatePage] Filterable page detected: ${pageType}, processing`);
 
       const isArtworkPage = pageType === 'artwork';
-      const authorPromise = isArtworkPage ? getPageAuthorId() : Promise.resolve(null);
+      const isProfilePage = pageType === 'profile';
+      const authorPromise = isArtworkPage
+        ? getPageAuthorId()
+        : Promise.resolve(isProfilePage ? getProfileOwnerId() : null);
 
       if (isArtworkPage) {
         browser.runtime.sendMessage({ action: 'resetBatchCount' });
@@ -985,8 +1250,6 @@ function updatePage() {
           appState.currentAuthorId = authorId;
           logDebug(`[updatePage] Final author ID: ${authorId}`);
           appState.removedCount = 0;
-
-          updateAllArtworks();
 
           if (isArtworkPage) {
             waitForRecommendationGrid(); // wait on artwork pages
@@ -1000,7 +1263,7 @@ function updatePage() {
               waitForDiscoveryContainers(); // wait on discovery page
             }
           }
-          updateCounter();
+          updateIndicator();
         })
         .catch((error) => {
           console.error('[updatePage] Error resolving getPageAuthorId:', error);
@@ -1019,6 +1282,7 @@ function updatePage() {
 async function main() {
   try {
     logDebug('[main] main function started');
+    browser.runtime.sendMessage({ action: 'updateTabUrl', url: window.location.href }).catch(() => {});
     await loadSettings();
 
     // Initialize thumbnail fixer for all Pixiv pages
@@ -1107,13 +1371,21 @@ browser.storage.onChanged.addListener((changes, namespace) => {
     }
     if (changes.blacklist !== undefined) {
       settings.blacklist = new Set(changes.blacklist.newValue);
+      updateProfileBlockCssState();
+      if (isFilterablePage()) refreshArtworks(false);
     }
-    if (changes.counterPos !== undefined) {
-      settings.counterPos = changes.counterPos.newValue;
-      updateCounter();
+    if (changes.indicatorPos !== undefined) {
+      settings.indicatorPos = changes.indicatorPos.newValue;
+      updateIndicator();
     }
   } else if (namespace === 'sync') {
     if (changes.removeSameAuthor !== undefined) settings.removeSameAuthor = changes.removeSameAuthor.newValue;
+
+    if (changes.hideBlockedArtistProfileArtworks !== undefined) {
+      settings.hideBlockedArtistProfileArtworks = changes.hideBlockedArtistProfileArtworks.newValue;
+      updateProfileBlockCssState();
+      if (isFilterablePage()) refreshArtworks(false);
+    }
 
     if (changes.thumbnailFixer !== undefined) {
       thumbnailFixerEnabled = changes.thumbnailFixer.newValue;
@@ -1122,6 +1394,10 @@ browser.storage.onChanged.addListener((changes, namespace) => {
 
     if (changes.limitRecommendations !== undefined) limitRecommendations = changes.limitRecommendations.newValue;
     if (changes.maxRecommendations !== undefined) maxRecommendations = changes.maxRecommendations.newValue;
+    if (changes.indicatorMode !== undefined) {
+      settings.indicatorMode = changes.indicatorMode.newValue;
+      updateIndicator();
+    }
   }
 });
 

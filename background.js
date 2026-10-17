@@ -10,37 +10,54 @@ function logDebug(...args) {
 const DEFAULT_MAX_RECOMMENDATIONS = 90;
 
 let batchCounts = new Map();
-let settings = { limitRecommendations: false, maxRecommendations: DEFAULT_MAX_RECOMMENDATIONS };
+let tabUrls = new Map(); // Track current tab URLs from content script
+let settings = {
+  limitRecommendations: false,
+  maxRecommendations: DEFAULT_MAX_RECOMMENDATIONS,
+  hideBlockedArtistProfileArtworks: true,
+  blacklist: new Set(),
+};
 let autoBackupEnabled = false;
-let webRequestListener = null; // store reference to the listener
+let webRequestListener = null; // store reference to the webRequest listener for recommendation limiting
+let profileImageBlockListener = null; // store reference to the profile image blocker listener
 
 async function loadSettings() {
   try {
     const syncResult = await browser.storage.sync.get({
       limitRecommendations: false,
       maxRecommendations: DEFAULT_MAX_RECOMMENDATIONS,
+      hideBlockedArtistProfileArtworks: true,
     });
     const localResult = await browser.storage.local.get({
       autoBackup: false,
       debugMode: false,
+      blacklist: [],
     });
 
     settings.limitRecommendations = syncResult.limitRecommendations;
     settings.maxRecommendations = syncResult.maxRecommendations;
+    settings.hideBlockedArtistProfileArtworks = syncResult.hideBlockedArtistProfileArtworks;
+    settings.blacklist = new Set((localResult.blacklist || []).map((id) => String(id).trim()));
     autoBackupEnabled = localResult.autoBackup;
     DEBUG = localResult.debugMode;
 
     logDebug('Debug mode set to:', DEBUG);
     logDebug(
-      `[background] Loaded settings: limitRecommendations=${settings.limitRecommendations}, maxRecommendations=${settings.maxRecommendations}, autoBackup=${autoBackupEnabled}`,
+      `Loaded settings: limitRecommendations=${settings.limitRecommendations}, 
+      maxRecommendations=${settings.maxRecommendations}, 
+      hideBlockedArtistProfileArtworks=${settings.hideBlockedArtistProfileArtworks}, 
+      blacklistSize=${settings.blacklist.size}, 
+      autoBackup=${autoBackupEnabled}`,
     );
-    // Update listener based on settings
+
+    // Update web request listeners based on settings
     updateWebRequestListener();
+    updateProfileImageBlockListener();
 
     // Propagate state to backup manager
     await backupManager.updateAlarmState(autoBackupEnabled);
   } catch (error) {
-    console.error('[background] Error loading settings:', error);
+    console.error('Error loading settings:', error);
   }
 }
 
@@ -86,32 +103,30 @@ async function updateBlacklist(userId, action, tabId) {
 
 function createWebRequestListener() {
   return async function (details) {
-    logDebug(`[background] webRequest fired: ${details.url}, tabId=${details.tabId}`);
+    logDebug(`webRequest fired: ${details.url}, tabId=${details.tabId}`);
 
     if (details.tabId < 0) {
-      logDebug(`[background] Invalid tabId, allowing request, tabId=${details.tabId}`);
+      logDebug(`Invalid tabId, allowing request, tabId=${details.tabId}`);
       return { cancel: false };
     }
 
     if (!settings.limitRecommendations) {
-      logDebug(
-        `[background] Limiting disabled, allowing request, limitRecommendations=${settings.limitRecommendations}`,
-      );
+      logDebug(`Limiting disabled, allowing request, limitRecommendations=${settings.limitRecommendations}`);
       return { cancel: false };
     }
 
     // Check if the request is from an artwork page
     try {
       const tab = await browser.tabs.get(details.tabId);
-      const tabUrl = tab.url;
+      const tabUrl = tab.url || tabUrls.get(details.tabId) || details.documentUrl || details.originUrl || '';
       const isArtworkPage = /\/(?:en\/)?artworks\/\d+/.test(tabUrl);
 
       if (!isArtworkPage) {
-        logDebug(`[background] Request not from artwork page (${tabUrl}), allowing`);
+        logDebug(`Request not from artwork page (${tabUrl}), allowing`);
         return { cancel: false };
       }
     } catch (error) {
-      console.error('[background] Error getting tab info:', error);
+      console.error('Error getting tab info:', error);
       return { cancel: false };
     }
 
@@ -122,9 +137,7 @@ function createWebRequestListener() {
     if (url.match(/\/ajax\/illust\/\d+\/recommend\/init\?limit=18/) || url.includes('/ajax/illust/discovery?mode=')) {
       // Initial batch
       const shouldBlock = maxBatches <= 0;
-      logDebug(
-        `[background] Initial discovery request: ${shouldBlock ? 'blocked' : 'allowed'} (maxBatches=${maxBatches})`,
-      );
+      logDebug(`Initial discovery request: ${shouldBlock ? 'blocked' : 'allowed'} (maxBatches=${maxBatches})`);
       return { cancel: shouldBlock };
     } else if (url.includes('/ajax/illust/recommend/illusts?')) {
       // Match subsequent batches
@@ -134,9 +147,7 @@ function createWebRequestListener() {
         count++;
         batchCounts.set(details.tabId, count);
       }
-      logDebug(
-        `[background] Recommend request: ${shouldBlock ? 'blocked' : 'allowed'} (count=${count}, maxBatches=${maxBatches})`,
-      );
+      logDebug(`Recommend request: ${shouldBlock ? 'blocked' : 'allowed'} (count=${count}, maxBatches=${maxBatches})`);
       return { cancel: shouldBlock };
     }
     return { cancel: false };
@@ -158,12 +169,132 @@ function updateWebRequestListener() {
       },
       ['blocking'],
     );
-    logDebug('[background] Added webRequest listener');
+    logDebug('Added webRequest listener');
   } else if (!settings.limitRecommendations && webRequestListener) {
     // Remove listener if not needed and present
     browser.webRequest.onBeforeRequest.removeListener(webRequestListener);
     webRequestListener = null;
-    logDebug('[background] Removed webRequest listener');
+    logDebug('Removed webRequest listener');
+  }
+}
+
+// Match only the artist's own profile tabs (excludes /bookmarks)
+const PROFILE_URL_REGEX = /pixiv\.net\/(?:en\/)?users\/(\d+)(?:\/(?:artworks|illustrations|manga|novels))?(?:[/?#]|$)/i;
+
+// Match Pixiv artwork files only.
+// Examples include .../custom-thumb/img/YYYY/MM/DD/HH/MM/SS/123456_p0_custom1200.jpg
+// and the equivalent img-master/img or img-original/img artwork paths.
+function isPixivArtworkImageUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    if (url.hostname.toLowerCase() !== 'i.pximg.net') return false;
+
+    return /\/(?:custom-thumb|img-master|img-original)\/img\/(?:\d{4}\/\d{2}\/\d{2}\/\d{2}\/\d{2}\/\d{2}\/)?\d+_p\d+_[^/]+\.(?:jpe?g|png|webp|gif)$/i.test(
+      url.pathname,
+    );
+  } catch {
+    return false;
+  }
+}
+
+function createProfileImageBlockListener() {
+  return async function (details) {
+    //logDebug(`webRequest fired: url=${details.url}, ` + `tabId=${details.tabId}, type=${details.type}`,);
+
+    if (details.tabId < 0 || !settings.hideBlockedArtistProfileArtworks || settings.blacklist.size === 0) {
+      logDebug('Skipped by initial guard, either invalid tabId, feature disabled, or empty blacklist');
+      return { cancel: false };
+    }
+
+    // Only consider known Pixiv artwork-file URL patterns.
+    if (!isPixivArtworkImageUrl(details.url)) {
+      logDebug(`Allowed non-artwork image: ${details.url}`);
+      return { cancel: false };
+    }
+
+    // Allow user avatars, profile header backgrounds, and static UI assets
+    if (
+      details.url.includes('/user-profile/') ||
+      details.url.includes('/background/') ||
+      details.url.includes('/common/')
+    ) {
+      logDebug('Allowed profile/UI asset');
+      return { cancel: false };
+    }
+
+    // Resolve the URL of the page this request belongs to. Prefer the live tab URL
+    // (which reflects in-page/SPA navigation), then Firefox's documentUrl/originUrl,
+    // and finally the content-script-tracked tabUrls map as a last resort.
+    let pageUrl = '';
+    try {
+      const tab = await browser.tabs.get(details.tabId);
+      pageUrl = tab.url || '';
+    } catch (error) {
+      logDebug(`tabs.get failed for tabId=${details.tabId}: ${error.message}`);
+    }
+    if (!pageUrl) {
+      pageUrl = details.documentUrl || details.originUrl || tabUrls.get(details.tabId) || '';
+    }
+
+    const candidateUrls = [
+      pageUrl,
+      details.documentUrl || '',
+      details.originUrl || '',
+      tabUrls.get(details.tabId) || '',
+    ];
+
+    const isBookmarksPage = (rawUrl) => {
+      try {
+        const url = new URL(rawUrl);
+        return url.hostname === 'www.pixiv.net' && /\/(?:en\/)?users\/\d+\/bookmarks(?:\/|$)/i.test(url.pathname);
+      } catch {
+        return false;
+      }
+    };
+
+    if (candidateUrls.some(isBookmarksPage)) {
+      logDebug('Bookmarks page detected; allowing request');
+      return { cancel: false };
+    }
+
+    const match = pageUrl.match(PROFILE_URL_REGEX);
+
+    if (match && settings.blacklist.has(match[1])) {
+      const msg = `Blocked profile artwork image for blacklisted user ${match[1]}: ${details.url}`;
+      logDebug(msg);
+      return { cancel: true };
+    }
+
+    return { cancel: false };
+  };
+}
+
+function updateProfileImageBlockListener() {
+  const shouldListen = settings.hideBlockedArtistProfileArtworks && settings.blacklist.size > 0;
+  logDebug(
+    `[background] updateProfileImageBlockListener: hideBlockedArtistProfileArtworks=${settings.hideBlockedArtistProfileArtworks}, blacklistSize=${settings.blacklist.size}, shouldListen=${shouldListen}`,
+  );
+  if (shouldListen && !profileImageBlockListener) {
+    try {
+      profileImageBlockListener = createProfileImageBlockListener();
+      browser.webRequest.onBeforeRequest.addListener(
+        profileImageBlockListener,
+        {
+          urls: ['*://*.pximg.net/*'],
+          types: ['image', 'imageset'],
+        },
+        ['blocking'],
+      );
+      browser.webRequest.handlerBehaviorChanged?.();
+      logDebug('Added profile image webRequest blocker');
+    } catch (error) {
+      console.error('[background] Failed to add profile image webRequest blocker:', error);
+    }
+  } else if (!shouldListen && profileImageBlockListener) {
+    browser.webRequest.onBeforeRequest.removeListener(profileImageBlockListener);
+    profileImageBlockListener = null;
+    browser.webRequest.handlerBehaviorChanged?.();
+    logDebug('Removed profile image webRequest blocker');
   }
 }
 
@@ -204,9 +335,9 @@ async function setupContextMenus() {
       }),
     ]);
 
-    logDebug('Pixiv User Filter: Context menus created successfully');
+    logDebug('Context menus created successfully');
   } catch (error) {
-    console.error('Pixiv User Filter: Critical error setting up context menus:', error);
+    console.error('Critical error setting up context menus:', error);
   }
 }
 
@@ -217,19 +348,28 @@ browser.runtime.onInstalled.addListener(setupContextMenus);
 browser.runtime.onStartup.addListener(setupContextMenus);
 
 browser.runtime.onMessage.addListener((message, sender) => {
-  if (message.action === 'setBadge') {
+  if (sender.tab && sender.tab.id && sender.url) {
+    tabUrls.set(sender.tab.id, sender.url);
+  }
+
+  if (message.action === 'updateTabUrl') {
+    if (sender.tab && sender.tab.id) {
+      tabUrls.set(sender.tab.id, message.url || sender.url);
+      logDebug(`Updated tabUrl for tab ${sender.tab.id}: ${message.url}`);
+    }
+  } else if (message.action === 'setBadge') {
     const text = message.count > 0 ? message.count.toString() : '';
     browser.action.setBadgeText({ text });
     if (message.count > 0) {
       browser.action.setBadgeBackgroundColor({ color: '#666' });
     }
-    logDebug(`[setBadge] Badge set to "${text}"`);
+    logDebug(`Badge set to "${text}"`);
   } else if (message.action === 'refreshBlacklist') {
     loadSettings();
   } else if (message.action === 'resetBatchCount') {
     if (sender.tab && sender.tab.id) {
       batchCounts.set(sender.tab.id, 0);
-      logDebug(`[background] Reset batch count for tab ${sender.tab.id}`);
+      logDebug(`Reset batch count for tab ${sender.tab.id}`);
     }
   } else if (message.action === 'getManualBackup') {
     // Return the payload Promise directly to options.js
@@ -261,7 +401,7 @@ browser.action.onClicked.addListener(() => {
 // Handle global permission revocation
 browser.permissions.onRemoved.addListener((permissions) => {
   if (permissions.permissions && permissions.permissions.includes('downloads')) {
-    logDebug('[background] Downloads permission revoked. Disabling auto-backup.');
+    logDebug('Downloads permission revoked. Disabling auto-backup.');
     // Writing to storage will automatically propagate to options UI and the backupManager
     browser.storage.local.set({ autoBackup: false });
   }
@@ -279,6 +419,11 @@ browser.storage.onChanged.addListener((changes, namespace) => {
       logDebug('Auto backup state changed to:', autoBackupEnabled);
       backupManager.updateAlarmState(autoBackupEnabled);
     }
+    if (changes.blacklist !== undefined) {
+      settings.blacklist = new Set((changes.blacklist.newValue || []).map((id) => String(id).trim()));
+      updateProfileImageBlockListener();
+      browser.webRequest.handlerBehaviorChanged?.();
+    }
   } else if (namespace === 'sync') {
     if (changes.limitRecommendations !== undefined) {
       settings.limitRecommendations = changes.limitRecommendations.newValue;
@@ -286,6 +431,11 @@ browser.storage.onChanged.addListener((changes, namespace) => {
     }
     if (changes.maxRecommendations !== undefined) {
       settings.maxRecommendations = changes.maxRecommendations.newValue;
+    }
+    if (changes.hideBlockedArtistProfileArtworks !== undefined) {
+      settings.hideBlockedArtistProfileArtworks = changes.hideBlockedArtistProfileArtworks.newValue;
+      updateProfileImageBlockListener();
+      browser.webRequest.handlerBehaviorChanged?.();
     }
   }
 });

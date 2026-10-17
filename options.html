@@ -47,7 +47,10 @@
         height: 16px;
         accent-color: var(--in-content-primary-button-background, #0060df);
       }
-      button {
+      select {
+        margin-right: 0;
+      }
+      button, select {
         width: auto;
         display: inline-flex;
         align-items: center;
@@ -61,7 +64,9 @@
         font-size: 14px;
       }
       button:hover,
-      button:active {
+      button:active,
+      select:hover,
+      select:active {
         background-color: #d0d0d0; /* Lighter gray for hover/active in light mode */
       }
       .save-container {
@@ -106,6 +111,16 @@
       .slider-container.disabled span {
         color: var(--in-content-text-color, #888); /* Grey text */
       }
+      .info-icon {
+        display: inline-block;
+        font-family: "Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", sans-serif;
+        font-size: 1.2em;
+        line-height: 1;
+        vertical-align: -0.08em;
+        cursor: help;
+        user-select: none;
+        margin-left: 4px;
+      }
 
       /* Dark mode adjustments */
       @media (prefers-color-scheme: dark) {
@@ -117,13 +132,16 @@
         textarea.invalid {
           border-color: var(--in-content-error-color, #e04f5f);
         }
-        button {
+        button,
+        select {
           background-color: #4a4a4e; /* Medium gray for dark mode */
           color: #fff; /* White text in dark mode */
           border: 1px solid var(--in-content-button-border-color, #ccc);
         }
         button:hover,
-        button:active {
+        button:active,
+        select:hover,
+        select:active {
           background-color: #5a5a5e; /* Lighter gray for hover/active in dark mode */
         }
         #status-message {
@@ -152,20 +170,34 @@
       </div>
       <label>
         <input type="checkbox" data-setting="removeSameAuthor" />
-        Remove recommendations from the same author
+        Remove recommendations from the same artist
+      </label>
+      <label>
+        <input type="checkbox" data-setting="hideBlockedArtistProfileArtworks" />
+        Hide artworks from blocked artists on their profile pages
+        <span
+          title="When enabled, all artwork thumbnails on a blocked artist's own profile page are hidden."
+          class="info-icon"
+          >🛈</span
+        >
       </label>
       <label>
         <input type="checkbox" data-setting="thumbnailFixer" />
         Restore proper uncropped thumbnails
         <span
           title="Will display full, uncropped thumbnails, maintaining correct aspect ratio."
-          style="margin-left: 4px; cursor: help"
-          >ⓘ</span
+          class="info-icon"
+          >🛈</span
         >
       </label>
       <label>
         <input type="checkbox" data-setting="limitRecommendations" />
         Limit the number of recommendations
+        <span
+          title="Will limit the max number of artworks displayed in the recommendations section,
+any artworks beyond the limit are blocked from loading."
+          class="info-icon"
+          >🛈</span>
       </label>
       <div class="slider-container" style="display: flex; align-items: center; gap: 10px">
         <label for="maxRecommendations">Max recommendations:</label>
@@ -175,16 +207,26 @@
       <label>
         <input type="checkbox" id="autoBackup" data-setting="autoBackup" />
         Enable automatic backups
+        <span title="Requires 'Downloads' permission. Automatically saves a backup of the blacklist."
+              class="info-icon">🛈</span>
+      </label>
+      <label for="indicatorMode">
+        <span>Floating indicator:</span>
+        <select id="indicatorMode" data-setting="indicatorMode">
+          <option value="counter">Counter ("Removed: X")</option>
+          <option value="indicator">Green circle</option>
+          <option value="off">Off</option>
+        </select>
         <span
-                title="Requires 'Downloads' permission."
-                style="margin-left: 4px; cursor: help">ⓘ</span>
+          title="Choose whether to show the floating counter or a simple green dot indicator on pages where blocking is active."
+          class="info-icon">🛈</span>
       </label>
       <label for="debugMode">
         <input type="checkbox" id="debugMode" data-setting="debugMode" />
         Enable debug logging
         <span
-          title="Default: off. Only enable if you need console logs for a bug report."
-          style="margin-left: 4px; cursor: help">ⓘ</span>
+                title="Default: off. Only enable if you need console logs for a bug report."
+                class="info-icon">🛈</span>
       </label>
       <div class="save-container" style="display: flex; flex-direction: column; gap: 10px; align-items: flex-start">
         <div class="button-group" style="display: flex; gap: 10px; flex-wrap: wrap">

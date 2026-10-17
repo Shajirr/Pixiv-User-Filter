@@ -19,6 +19,8 @@ const SYNC_DEFAULTS = Object.freeze({
   thumbnailFixer: false,
   limitRecommendations: false,
   maxRecommendations: 90,
+  indicatorMode: 'counter', // 'counter' | 'indicator' | 'off'
+  hideBlockedArtistProfileArtworks: true,
 });
 
 // Settings specific to the local browser installation
@@ -255,8 +257,7 @@ form.addEventListener('submit', (e) => {
 async function loadOptions() {
   try {
     // TEMP - destroy old keys stuck in local storage from previous versions
-    // to prevent them from overriding active sync data during backup generation.
-    const obsoleteLocalKeys = ['DEBUG', ...Object.keys(SYNC_DEFAULTS)];
+    const obsoleteLocalKeys = ['DEBUG', 'showCounter', ...Object.keys(SYNC_DEFAULTS)];
     await browser.storage.local.remove(obsoleteLocalKeys);
 
     // Fetch from both sync and local areas
@@ -326,7 +327,7 @@ saveBackupBtn.addEventListener('click', async () => {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      showStatusMessage('Backup saved successfully', true);
+      showStatusMessage('Backup created successfully', true);
     } else {
       showStatusMessage('Backup failed to generate', false);
     }

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Pixiv User Filter",
-  "version": "2026.7.5",
-  "description": "Hides Pixiv artworks of blacklisted users",
+  "version": "2026.10.17",
+  "description": "Hides Pixiv artworks of blacklisted artists",
 
   "browser_specific_settings": {
     "gecko": {
@@ -25,7 +25,14 @@
 
   "optional_permissions": ["downloads"],
 
-  "host_permissions": ["*://*.pixiv.net/*"],
+  "host_permissions": ["*://*.pixiv.net/*", "*://*.pximg.net/*"],
+
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/blocked.svg"],
+      "matches": ["*://*.pixiv.net/*"]
+    }
+  ],
 
   "action": {
     "default_title": "Pixiv User Filter"
@@ -48,10 +55,10 @@
   },
 
   "icons": {
-    "16": "icon.svg",
-    "32": "icon.svg",
-    "48": "icon.svg",
-    "64": "icon.svg",
-    "96": "icon.svg"
+    "16": "icons/icon.svg",
+    "32": "icons/icon.svg",
+    "48": "icons/icon.svg",
+    "64": "icons/icon.svg",
+    "96": "icons/icon.svg"
   }
 }
