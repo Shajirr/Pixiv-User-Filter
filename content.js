@@ -54,7 +54,9 @@ function injectProfileBlockStyles() {
   style.id = 'pxv-uf-profile-block-styles';
   style.textContent = `
     /* Immediately prevent artwork thumbnails from flashing before JS processes the node */
-    html.pxv-uf-block-profile ul li a[href*="/artworks/"] img:not(.pxv-uf-blocked-icon) {
+    html.pxv-uf-block-profile ul li a[href*="/artworks/"] img:not(.pxv-uf-blocked-icon),
+    html.pxv-uf-block-artwork figure img:not(.pxv-uf-blocked-icon),
+    html.pxv-uf-block-artwork nav a[href*="/artworks/"] img:not(.pxv-uf-blocked-icon) {
       opacity: 0 !important;
       visibility: hidden !important;
     }
@@ -73,7 +75,30 @@ function injectProfileBlockStyles() {
       border-radius: 4px !important;
       overflow: hidden !important;
     }
-    .pxv-uf-blocked-thumb-link > *:not(.pxv-uf-blocked-placeholder) {
+    .pxv-uf-blocked-nav-thumb-link {
+      position: relative !important;
+      display: block !important;
+      width: 100% !important;
+      height: 100% !important;
+      aspect-ratio: 1 / 1 !important;
+      background-color: rgba(128, 128, 128, 0.14) !important;
+      border-radius: 4px !important;
+      overflow: hidden !important;
+    }
+    .pxv-uf-blocked-main-artwork {
+      position: relative !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      width: 100% !important;
+      min-height: 396px !important;
+      background-color: rgba(128, 128, 128, 0.14) !important;
+      border-radius: 4px !important;
+      overflow: hidden !important;
+    }
+    .pxv-uf-blocked-thumb-link > *:not(.pxv-uf-blocked-placeholder),
+    .pxv-uf-blocked-nav-thumb-link > *:not(.pxv-uf-blocked-placeholder),
+    .pxv-uf-blocked-main-artwork > *:not(.pxv-uf-blocked-placeholder) {
       opacity: 0 !important;
       visibility: hidden !important;
       pointer-events: none !important;
@@ -99,23 +124,57 @@ function injectProfileBlockStyles() {
       font-weight: 700 !important;
       font-size: 14px !important;
     }
+    .pxv-uf-blocked-placeholder-large {
+      gap: 12px !important;
+    }
+    .pxv-uf-blocked-placeholder-large > .pxv-uf-blocked-icon {
+      transform: scale(2) !important;
+      margin-bottom: 12px !important;
+    }
+    .pxv-uf-blocked-placeholder-large > span {
+      font-size: 28px !important;
+    }
   `;
   (document.head || document.documentElement).appendChild(style);
 }
 
-// Toggle root class so CSS immediately masks profile artwork thumbnails before DOM observers fire
+// Toggle root class so CSS immediately masks profile/artwork thumbnails before DOM observers fire
 function updateProfileBlockCssState() {
   if (TEST_DISABLE_PLACEHOLDERS_AND_CSS) {
-    document.documentElement.classList.remove('pxv-uf-block-profile');
+    document.documentElement.classList.remove('pxv-uf-block-profile', 'pxv-uf-block-artwork');
     return;
   }
   injectProfileBlockStyles();
-  const isProfile = getPageType() === 'profile';
-  const ownerId = isProfile ? getProfileOwnerId() : null;
-  const shouldBlock = Boolean(
-    isProfile && settings.hideBlockedArtistProfileArtworks && ownerId && settings.blacklist.has(ownerId),
+  const pageType = getPageType();
+  const isProfile = pageType === 'profile';
+  const isArtwork = pageType === 'artwork';
+
+  const ownerId = isProfile ? getProfileOwnerId() : isArtwork ? appState.currentAuthorId : null;
+  const isOwnerBlocked = Boolean(
+    settings.hideBlockedArtistProfileArtworks && ownerId && settings.blacklist.has(ownerId),
   );
-  document.documentElement.classList.toggle('pxv-uf-block-profile', shouldBlock);
+
+  document.documentElement.classList.toggle('pxv-uf-block-profile', isProfile && isOwnerBlocked);
+  document.documentElement.classList.toggle('pxv-uf-block-artwork', isArtwork && isOwnerBlocked);
+}
+
+// Create a placeholder element for blocked artworks
+function createBlockedPlaceholderElement(isLarge = false) {
+  const placeholder = document.createElement('div');
+  placeholder.className = isLarge
+    ? 'pxv-uf-blocked-placeholder pxv-uf-blocked-placeholder-large'
+    : 'pxv-uf-blocked-placeholder';
+
+  const icon = document.createElement('img');
+  icon.src = browser.runtime.getURL('icons/blocked.svg');
+  icon.className = 'pxv-uf-blocked-icon';
+  placeholder.appendChild(icon);
+
+  const label = document.createElement('span');
+  label.textContent = 'Blocked';
+  placeholder.appendChild(label);
+
+  return placeholder;
 }
 
 // Replace artwork thumbnail inside a profile <li> with a placeholder
@@ -141,19 +200,7 @@ function applyProfilePlaceholder(li) {
   thumbLink.classList.add('pxv-uf-blocked-thumb-link');
 
   if (!thumbLink.querySelector('.pxv-uf-blocked-placeholder')) {
-    const placeholder = document.createElement('div');
-    placeholder.className = 'pxv-uf-blocked-placeholder';
-
-    const icon = document.createElement('img');
-    icon.src = browser.runtime.getURL('icons/blocked.svg');
-    icon.className = 'pxv-uf-blocked-icon';
-    placeholder.appendChild(icon);
-
-    const label = document.createElement('span');
-    label.textContent = 'Blocked';
-    placeholder.appendChild(label);
-
-    thumbLink.appendChild(placeholder);
+    thumbLink.appendChild(createBlockedPlaceholderElement(false));
   }
   li.dataset.pxvBlocked = 'true';
 }
@@ -167,6 +214,72 @@ function removeProfilePlaceholder(li) {
     el.classList.remove('pxv-uf-blocked-thumb-link');
   });
   li.querySelectorAll('.pxv-uf-blocked-placeholder').forEach((el) => el.remove());
+}
+
+// Block or unblock main artwork, "Other works" nav, and scrollable gallery on an artwork page
+function updateArtworkPageOwnerElements() {
+  if (TEST_DISABLE_PLACEHOLDERS_AND_CSS) return;
+
+  const isArtwork = getPageType() === 'artwork';
+  const authorId = appState.currentAuthorId;
+  const shouldBlock = Boolean(
+    isArtwork && settings.hideBlockedArtistProfileArtworks && authorId && settings.blacklist.has(authorId),
+  );
+
+  // Main artwork
+  const figures = document.querySelectorAll('figure');
+  figures.forEach((figure) => {
+    const viewContainer =
+      figure.querySelector('div.gtm-medium-work-expanded-view')?.parentElement ||
+      figure.querySelector('div[role="presentation"]');
+    if (!viewContainer) return;
+
+    if (shouldBlock) {
+      viewContainer.classList.add('pxv-uf-blocked-main-artwork');
+      if (!viewContainer.querySelector('.pxv-uf-blocked-placeholder')) {
+        viewContainer.appendChild(createBlockedPlaceholderElement(true));
+      }
+      figure.dataset.pxvBlockedMain = 'true';
+    } else if (figure.dataset.pxvBlockedMain) {
+      delete figure.dataset.pxvBlockedMain;
+      viewContainer.classList.remove('pxv-uf-blocked-main-artwork');
+      viewContainer.querySelectorAll('.pxv-uf-blocked-placeholder').forEach((el) => el.remove());
+    }
+  });
+
+  // "Other works" section & scrollable gallery under main artwork (inside <nav> elements)
+  const navLinks = document.querySelectorAll(`nav a[href*="/artworks/"]`);
+  navLinks.forEach((link) => {
+    const linkUserId = link.getAttribute('data-gtm-user-id');
+    // Only target links belonging to the artwork's author
+    if (linkUserId && authorId && linkUserId !== authorId) return;
+    if (!link.querySelector('img, div')) return;
+
+    if (shouldBlock) {
+      link.classList.add('pxv-uf-blocked-nav-thumb-link');
+      if (!link.querySelector('.pxv-uf-blocked-placeholder')) {
+        link.appendChild(createBlockedPlaceholderElement(false));
+      }
+      // Hide bookmark button in the scrollable gallery cell
+      const cell = link.parentElement;
+      if (cell) {
+        cell.querySelectorAll(selectors.bookmarkButton).forEach((btn) => {
+          btn.style.display = 'none';
+        });
+      }
+      link.dataset.pxvBlockedNav = 'true';
+    } else if (link.dataset.pxvBlockedNav) {
+      delete link.dataset.pxvBlockedNav;
+      link.classList.remove('pxv-uf-blocked-nav-thumb-link');
+      link.querySelectorAll('.pxv-uf-blocked-placeholder').forEach((el) => el.remove());
+      const cell = link.parentElement;
+      if (cell) {
+        cell.querySelectorAll(selectors.bookmarkButton).forEach((btn) => {
+          btn.style.display = '';
+        });
+      }
+    }
+  });
 }
 
 async function loadSettings() {
@@ -205,6 +318,7 @@ async function loadSettings() {
       `[loadSettings] Loaded settings: blacklist size=${settings.blacklist.size}, removeSameAuthor=${settings.removeSameAuthor}, hideBlockedArtistProfileArtworks=${settings.hideBlockedArtistProfileArtworks}, thumbnailFixer=${thumbnailFixerEnabled}, indicatorMode=${settings.indicatorMode}`,
     );
     updateProfileBlockCssState();
+
     // Update thumbnail fixer after loading settings
     if (typeof ThumbnailFixer !== 'undefined') {
       ThumbnailFixer.setEnabled(thumbnailFixerEnabled);
@@ -550,6 +664,7 @@ function updateAllArtworks(attempt = 1, maxAttempts = 3) {
     logDebug('[updateAllArtworks] Starting artwork update');
 
     updateProfileBlockCssState();
+    updateArtworkPageOwnerElements();
 
     // Determine context for "removeSameAuthor" dynamically
     const pageType = getPageType();
@@ -1075,7 +1190,10 @@ function setupPageContentObserver() {
   const pageType = getPageType();
   // Only pages with infinite/pagination loading need this observer
   // Base tag pages (tag-base) have no infinite loading -> skip observer
-  if (!['tag', 'tag-search', 'illustration', 'manga', 'discovery', 'profile', 'bookmarks'].includes(pageType)) return;
+  if (
+    !['artwork', 'tag', 'tag-search', 'illustration', 'manga', 'discovery', 'profile', 'bookmarks'].includes(pageType)
+  )
+    return;
 
   let targetContainer = document.body;
   let checkIsGrid = false;
@@ -1126,6 +1244,22 @@ function setupPageContentObserver() {
         if (hasNewArtworkNodes(mutation.addedNodes, false, checkIsGrid)) {
           hasNewContent = true;
           break;
+        }
+        if (pageType === 'artwork') {
+          for (const node of mutation.addedNodes) {
+            if (
+              node.nodeType === Node.ELEMENT_NODE &&
+              (node.tagName === 'FIGURE' ||
+                node.tagName === 'NAV' ||
+                node.tagName === 'IMG' ||
+                node.tagName === 'A' ||
+                node.querySelector?.('figure, nav, a[href*="/artworks/"], img'))
+            ) {
+              hasNewContent = true;
+              break;
+            }
+          }
+          if (hasNewContent) break;
         }
       }
     }
@@ -1252,6 +1386,9 @@ function updatePage() {
           appState.removedCount = 0;
 
           if (isArtworkPage) {
+            browser.runtime.sendMessage({ action: 'setArtworkAuthor', authorId }).catch(() => {});
+            updateProfileBlockCssState();
+            updateArtworkPageOwnerElements();
             waitForRecommendationGrid(); // wait on artwork pages
           } else {
             setupArtworkObserver();

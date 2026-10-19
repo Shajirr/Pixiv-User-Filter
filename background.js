@@ -11,6 +11,7 @@ const DEFAULT_MAX_RECOMMENDATIONS = 90;
 
 let batchCounts = new Map();
 let tabUrls = new Map(); // Track current tab URLs from content script
+let tabArtworkAuthors = new Map(); // Track current artwork page author ID per tab
 let settings = {
   limitRecommendations: false,
   maxRecommendations: DEFAULT_MAX_RECOMMENDATIONS,
@@ -265,6 +266,18 @@ function createProfileImageBlockListener() {
       return { cancel: true };
     }
 
+    // Block main artwork image requests on a blacklisted artist's artwork page
+    const artworkMatch = pageUrl.match(/pixiv\.net\/(?:en\/)?artworks\/(\d+)/i);
+    if (artworkMatch) {
+      const artworkId = artworkMatch[1];
+      const authorId = tabArtworkAuthors.get(details.tabId);
+      // Block if the image URL belongs to the current artwork ID and the author is blacklisted
+      if (authorId && settings.blacklist.has(authorId) && details.url.includes(`/${artworkId}_p`)) {
+        logDebug(`Blocked main artwork image for blacklisted user ${authorId}: ${details.url}`);
+        return { cancel: true };
+      }
+    }
+
     return { cancel: false };
   };
 }
@@ -374,6 +387,11 @@ browser.runtime.onMessage.addListener((message, sender) => {
   } else if (message.action === 'getManualBackup') {
     // Return the payload Promise directly to options.js
     return backupManager.getManualBackupPayload();
+  } else if (message.action === 'setArtworkAuthor') {
+    if (sender.tab && sender.tab.id) {
+      tabArtworkAuthors.set(sender.tab.id, message.authorId);
+      logDebug(`Updated artwork author for tab ${sender.tab.id}: ${message.authorId}`);
+    }
   }
 });
 
