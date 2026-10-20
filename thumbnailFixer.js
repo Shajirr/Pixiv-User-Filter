@@ -1,4 +1,4 @@
-debugPrefixLocal = '[ThumbnailFixer]';
+const debugPrefixLocal = '[ThumbnailFixer]';
 
 function logDebugLocal(...args) {
   if (DEBUG) console.log(debugPrefixLocal, ...args);

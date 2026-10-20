@@ -17,20 +17,22 @@ let settings = {
   indicatorMode: 'counter', // 'counter' | 'indicator' | 'off'
 };
 
-// State management
-const defaultState = {
-  removedCount: 0,
-  currentAuthorId: null,
-  processedLiElements: new WeakMap(),
-  observedContainers: new WeakSet(),
-  recommendationObservers: [],
-  pageContentObserver: null,
-  updateArtworksTimeout: null,
-  lastPathname: window.location.href,
-};
+// Factory: creates a fresh active-state object.
+function createAppState() {
+  return {
+    removedCount: 0,
+    currentAuthorId: null,
+    pageContentObserver: null,
+    updateArtworksTimeout: null,
+    lastPathname: window.location.href,
+    processedLiElements: new WeakMap(),
+    observedContainers: new WeakSet(),
+    recommendationObservers: [],
+  };
+}
 
-// Clone default state into active appState object
-const appState = { ...defaultState };
+// Active state
+const appState = createAppState();
 
 let pageContentDebounceTimer = null;
 let refreshDebounceTimer = null;

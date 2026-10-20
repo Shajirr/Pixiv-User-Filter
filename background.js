@@ -12,6 +12,9 @@ const DEFAULT_MAX_RECOMMENDATIONS = 90;
 let batchCounts = new Map();
 let tabUrls = new Map(); // Track current tab URLs from content script
 let tabArtworkAuthors = new Map(); // Track current artwork page author ID per tab
+
+// Serializes blacklist mutations so each update always re-reads the latest stored blacklist.
+let blacklistUpdateQueue = Promise.resolve();
 let settings = {
   limitRecommendations: false,
   maxRecommendations: DEFAULT_MAX_RECOMMENDATIONS,
@@ -67,39 +70,47 @@ function showNotification(title, message) {
     type: 'basic',
     title,
     message,
-    iconUrl: 'icon.svg',
+    iconUrl: 'icons/icon.svg',
   });
 }
 
 async function updateBlacklist(userId, action, tabId) {
-  try {
-    const { blacklist = [] } = await browser.storage.local.get('blacklist');
-    const blacklistSet = new Set(blacklist);
-    if (action === 'add') {
-      if (blacklistSet.has(userId)) {
-        logDebug(`User ID ${userId} already in blacklist`);
-        showNotification('Pixiv User Filter', `User ID ${userId} is already in the blacklist`);
-        return;
+  // Enqueue behind any earlier mutations and await completion so callers can
+  // rely on the update being applied. Each call re-reads storage before
+  // mutating.
+  blacklistUpdateQueue = blacklistUpdateQueue.then(async () => {
+    try {
+      const { blacklist = [] } = await browser.storage.local.get('blacklist');
+      const blacklistSet = new Set(blacklist);
+      if (action === 'add') {
+        if (blacklistSet.has(userId)) {
+          logDebug(`User ID ${userId} already in blacklist`);
+          showNotification('Pixiv User Filter', `User ID ${userId} is already in the blacklist`);
+          return;
+        }
+        blacklistSet.add(userId);
+        logDebug(`Added user ID ${userId} to blacklist`);
+        showNotification('Pixiv User Filter', `User ID ${userId} added to blacklist`);
+      } else if (action === 'remove') {
+        if (!blacklistSet.has(userId)) {
+          logDebug(`User ID ${userId} not in blacklist`);
+          showNotification('Pixiv User Filter', `User ID ${userId} is not in the blacklist`);
+          return;
+        }
+        blacklistSet.delete(userId);
+        logDebug(`Removed user ID ${userId} from blacklist`);
+        showNotification('Pixiv User Filter', `User ID ${userId} removed from blacklist`);
       }
-      blacklistSet.add(userId);
-      logDebug(`Added user ID ${userId} to blacklist`);
-      showNotification('Pixiv User Filter', `User ID ${userId} added to blacklist`);
-    } else if (action === 'remove') {
-      if (!blacklistSet.has(userId)) {
-        logDebug(`User ID ${userId} not in blacklist`);
-        showNotification('Pixiv User Filter', `User ID ${userId} is not in the blacklist`);
-        return;
-      }
-      blacklistSet.delete(userId);
-      logDebug(`Removed user ID ${userId} from blacklist`);
-      showNotification('Pixiv User Filter', `User ID ${userId} removed from blacklist`);
+      await browser.storage.local.set({ blacklist: Array.from(blacklistSet) });
+      // Keep the in-memory copy in sync immediately
+      settings.blacklist = blacklistSet;
+      await browser.tabs.sendMessage(tabId, { action: 'refreshBlacklist' });
+    } catch (error) {
+      console.error(`Error ${action}ing user ID ${userId}:`, error);
+      showNotification('Pixiv User Filter', `Failed to ${action} user ID ${userId}: ${error.message}`);
     }
-    await browser.storage.local.set({ blacklist: Array.from(blacklistSet) });
-    await browser.tabs.sendMessage(tabId, { action: 'refreshBlacklist' });
-  } catch (error) {
-    console.error(`Error ${action}ing user ID ${userId}:`, error);
-    showNotification('Pixiv User Filter', `Failed to ${action} user ID ${userId}: ${error.message}`);
-  }
+  });
+  await blacklistUpdateQueue;
 }
 
 function createWebRequestListener() {
@@ -409,6 +420,13 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
   } else if (info.menuItemId === 'remove-from-blacklist') {
     updateBlacklist(userId, 'remove', tab.id);
   }
+});
+
+// Clean up tab-specific data when a tab is closed
+browser.tabs.onRemoved.addListener((tabId) => {
+  tabUrls.delete(tabId);
+  tabArtworkAuthors.delete(tabId);
+  batchCounts.delete(tabId);
 });
 
 // Open options page when toolbar icon is clicked
